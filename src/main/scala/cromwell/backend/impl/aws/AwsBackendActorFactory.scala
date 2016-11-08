@@ -7,6 +7,8 @@ import wdl4s.Call
 
 case class AwsBackendActorFactory(name: String, configurationDescriptor: BackendConfigurationDescriptor) extends BackendLifecycleActorFactory {
 
+  val awsConfiguration = AwsConfiguration(configurationDescriptor)
+
   override def workflowInitializationActorProps(workflowDescriptor: BackendWorkflowDescriptor, calls: Set[Call], serviceRegistryActor: ActorRef): Option[Props] = {
     Option(AwsInitializationActor.props(workflowDescriptor, calls, serviceRegistryActor))
   }
@@ -17,6 +19,6 @@ case class AwsBackendActorFactory(name: String, configurationDescriptor: Backend
                                       backendSingletonActor: Option[ActorRef]): Props = AwsJobExecutionActor.props(jobDescriptor, configurationDescriptor)
 
   override def workflowFinalizationActorProps(workflowDescriptor: BackendWorkflowDescriptor, calls: Set[Call], executionStore: ExecutionStore, outputStore: OutputStore, initializationData: Option[BackendInitializationData]): Option[Props] = {
-    Option(AwsFinalizationActor.props(workflowDescriptor, calls, executionStore, outputStore))
+    Option(AwsFinalizationActor.props(workflowDescriptor, calls, awsConfiguration, executionStore, outputStore))
   }
 }

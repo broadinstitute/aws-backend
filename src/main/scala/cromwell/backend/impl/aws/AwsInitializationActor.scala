@@ -26,7 +26,7 @@ class AwsInitializationActor(override val workflowDescriptor: BackendWorkflowDes
   /**
     * Validate that this WorkflowBackendActor can run all of the calls that it's been assigned
     */
-  override def validate(): Future[Unit] = ???
+  override def validate(): Future[Unit] = Future.successful(())
 
   /**
     * The configuration for the backend, in the context of the entire Cromwell configuration file.
