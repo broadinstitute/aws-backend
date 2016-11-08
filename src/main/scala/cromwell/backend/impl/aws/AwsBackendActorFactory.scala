@@ -10,7 +10,7 @@ case class AwsBackendActorFactory(name: String, configurationDescriptor: Backend
   val awsConfiguration = AwsConfiguration(configurationDescriptor)
 
   override def workflowInitializationActorProps(workflowDescriptor: BackendWorkflowDescriptor, calls: Set[Call], serviceRegistryActor: ActorRef): Option[Props] = {
-    Option(AwsInitializationActor.props(workflowDescriptor, calls, serviceRegistryActor))
+    Option(AwsInitializationActor.props(workflowDescriptor, calls, serviceRegistryActor, awsConfiguration))
   }
 
   override def jobExecutionActorProps(jobDescriptor: BackendJobDescriptor,
