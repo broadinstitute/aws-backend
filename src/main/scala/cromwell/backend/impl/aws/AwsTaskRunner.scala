@@ -14,11 +14,11 @@ import scala.concurrent.duration.Duration
 trait AwsTaskRunner { self: ActorLogging with Actor =>
 
   def registerTaskDefinition(name: String, command: String, dockerImage: String, awsAttributes: AwsAttributes): TaskDefinition = {
-    val volumeProperties = new HostVolumeProperties().withSourcePath(awsAttributes.mountPoint)
+    val volumeProperties = new HostVolumeProperties().withSourcePath(awsAttributes.hostMountPoint)
     val cromwellVolume = "cromwell-volume"
     val volume = new Volume().withHost(volumeProperties).withName(cromwellVolume)
 
-    val mountPoint = new MountPoint().withSourceVolume(cromwellVolume).withContainerPath(awsAttributes.mountPoint)
+    val mountPoint = new MountPoint().withSourceVolume(cromwellVolume).withContainerPath(awsAttributes.containerMountPoint).withReadOnly(false)
     val accessKey = new KeyValuePair().withName("AWS_ACCESS_KEY_ID").withValue(awsAttributes.accessKeyId)
     val secretAccessKey = new KeyValuePair().withName("AWS_SECRET_ACCESS_KEY").withValue(awsAttributes.secretKey)
 

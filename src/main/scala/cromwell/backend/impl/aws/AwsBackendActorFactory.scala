@@ -5,6 +5,10 @@ import cromwell.backend.{BackendConfigurationDescriptor, BackendInitializationDa
 import cromwell.core.{ExecutionStore, OutputStore}
 import wdl4s.Call
 
+object AwsBackendActorFactory {
+  val AwsCliImage = "garland/aws-cli-docker:latest"
+}
+
 case class AwsBackendActorFactory(name: String, configurationDescriptor: BackendConfigurationDescriptor) extends BackendLifecycleActorFactory {
 
   val awsConfiguration = AwsConfiguration(configurationDescriptor)
@@ -18,7 +22,8 @@ case class AwsBackendActorFactory(name: String, configurationDescriptor: Backend
                                       serviceRegistryActor: ActorRef,
                                       backendSingletonActor: Option[ActorRef]): Props = AwsJobExecutionActor.props(jobDescriptor, configurationDescriptor, awsConfiguration)
 
-  override def workflowFinalizationActorProps(workflowDescriptor: BackendWorkflowDescriptor, calls: Set[Call], executionStore: ExecutionStore, outputStore: OutputStore, initializationData: Option[BackendInitializationData]): Option[Props] = {
-    Option(AwsFinalizationActor.props(workflowDescriptor, calls, awsConfiguration, executionStore, outputStore))
-  }
+  override def workflowFinalizationActorProps(workflowDescriptor: BackendWorkflowDescriptor, calls: Set[Call], executionStore: ExecutionStore, outputStore: OutputStore, initializationData: Option[BackendInitializationData]): Option[Props] = None
+//  {
+//    Option(AwsFinalizationActor.props(workflowDescriptor, calls, awsConfiguration, executionStore, outputStore))
+//  }
 }

@@ -31,7 +31,7 @@ class AwsInitializationActor(override val workflowDescriptor: BackendWorkflowDes
     val workflowInputsDirectory = s"${workflowDescriptor.id.id}/workflow-inputs"
 
     val prepareWorkflowInputDirectory = List(
-      s"cd ${awsAttributes.mountPoint}",
+      s"cd ${awsAttributes.containerMountPoint}",
       s"mkdir -p $workflowInputsDirectory",
       s"cd $workflowInputsDirectory")
 
@@ -40,9 +40,9 @@ class AwsInitializationActor(override val workflowDescriptor: BackendWorkflowDes
     val localizeWorkflowInputs = workflowDescriptor.inputs.values.collect { case file: WdlFile => s"/usr/bin/aws s3 cp ${file.value} ." } toList
     val commands = (prepareWorkflowInputDirectory ++ localizeWorkflowInputs).mkString(" && ")
 
-    val taskDefinition = registerTaskDefinition("localize-workflow-inputs", commands, "garland/aws-cli", awsAttributes)
+    val taskDefinition = registerTaskDefinition("localize-workflow-inputs", commands, AwsBackendActorFactory.AwsCliImage, awsAttributes)
     runTask(taskDefinition)
-    deregisterTaskDefinition(taskDefinition)
+    // deregisterTaskDefinition(taskDefinition)
     Future.successful(None)
   }
 

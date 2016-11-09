@@ -19,14 +19,14 @@ case class AwsFinalizationActor(override val workflowDescriptor: BackendWorkflow
 
   // Copy inputs from EFS to the output bucket
   override def afterAll(): Future[Unit] = {
-    
+
     def buildSourceAndDestinationPaths(reportableOutputs: Seq[ReportableSymbol]): Seq[(Path, Path)] = ???
 
     val sourceAndDestinationPaths = buildSourceAndDestinationPaths(workflowDescriptor.workflowNamespace.workflow.outputs)
 
     val commands = sourceAndDestinationPaths.collect { case (sourcePath, destinationPath) => s"/usr/bin/aws s3 cp $sourcePath $destinationPath" } toList
 
-    val taskDefinition = registerTaskDefinition("delocalizer-" + workflowDescriptor.id.id, commands.mkString(" && "), "garland/aws-cli", awsConfiguration.awsAttributes)
+    val taskDefinition = registerTaskDefinition("delocalizer-" + workflowDescriptor.id.id, commands.mkString(" && "), AwsBackendActorFactory.AwsCliImage, awsConfiguration.awsAttributes)
     runTask(taskDefinition)
     deregisterTaskDefinition(taskDefinition)
     Future.successful(())

@@ -7,7 +7,7 @@ import lenthall.config.ValidatedConfig._
 import wdl4s.ExceptionWithErrors
 
 
-case class AwsAttributes(accessKeyId: String, secretKey: String, clusterName: String, containerMemoryMib: Int, mountPoint: String)
+case class AwsAttributes(accessKeyId: String, secretKey: String, clusterName: String, containerMemoryMib: Int, hostMountPoint: String, containerMountPoint: String)
 
 object AwsAttributes {
 
@@ -16,7 +16,8 @@ object AwsAttributes {
     "secret-key",
     "cluster-name",
     "container-memory-mib",
-    "mount-point"
+    "host-mount-point",
+    "container-mount-point"
   )
 
   private val context = "AWS"
@@ -28,10 +29,11 @@ object AwsAttributes {
     val secretKey = backendConfig.validateString("secret-key")
     val clusterName = backendConfig.validateString("cluster-name")
     val containerMemoryMib = backendConfig.validateInt("container-memory-mib")
-    val mountPoint = backendConfig.validateString("mount-point")
+    val hostMountPoint = backendConfig.validateString("host-mount-point")
+    val containerMountPoint = backendConfig.validateString("container-mount-point")
 
-    (accessKeyId |@| secretKey |@| clusterName |@| containerMemoryMib |@| mountPoint) map {
-      AwsAttributes(_, _, _, _, _)
+    (accessKeyId |@| secretKey |@| clusterName |@| containerMemoryMib |@| hostMountPoint |@| containerMountPoint) map {
+      AwsAttributes(_, _, _, _, _, _)
     } match {
       case Valid(r) => r
       case Invalid(f) =>

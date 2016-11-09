@@ -13,13 +13,14 @@ class AwsJobExecutionActor(override val jobDescriptor: BackendJobDescriptor,
 
   override def execute: Future[BackendJobExecutionResponse] = {
 
-    val taskDefinition = registerTaskDefinition("user-command-" + jobDescriptor.toString, ???, ???, awsConfiguration.awsAttributes)
+//    val taskDefinition = registerTaskDefinition("user-command-" + jobDescriptor.toString, ???, ???, awsConfiguration.awsAttributes)
+//
+//    runTask(taskDefinition)
+//
+//    deregisterTaskDefinition(taskDefinition)
+//    Future.successful(SucceededResponse(jobDescriptor.key, ???, ???, ???, ???))
 
-    runTask(taskDefinition)
-
-    deregisterTaskDefinition(taskDefinition)
-    Future.successful(SucceededResponse(jobDescriptor.key, ???, ???, ???, ???))
-
+    Future.successful(SucceededResponse(jobDescriptor.key, Option(0), Map.empty, None, Seq.empty))
   }
 }
 
