@@ -41,11 +41,24 @@ object AwsJobExecutionActor {
          (or more specifically <a href="https://github.com/awslabs/amazon-ecs-amazon-efs/blob/master/amazon-efs-ecs.json">here</a>),
          but this caused hangs and timeouts attempting to mount.  I added a security group to the EC2 instance that
          allows all traffic and that got past the problem, but is again probably more permissive than required.</li>
+      <li>SSH into the EC2 instance and mount the EFS volume. This monstrosity is the mount command:
+        <pre>
+sudo mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 $(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone).fs-f9b86eb0.efs.us-east-1.amazonaws.com:/ /usr/share/iodir
+        <pre>
+      </li>
+      <li>
+         Restart the Docker daemon on the EC2 instance.  This is required to avoid some
+         <a href="https://forums.docker.com/t/docker-fails-to-mount-v-volume-from-nfs-mounted-directory/582/3">weird behavior</a>
+         where the NFS filesystem does not look the same inside and outside of containers.
+
+         <pre>sudo service docker restart</pre>
+      </li>
+      <li>
+         Restart the ECS agent:
+         <pre>sudo start ecs</pre>
+      </li>
    </ol>
 
-   This monstrosity is the mount command:
-
-   <pre>sudo mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 $(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone).fs-f9b86eb0.efs.us-east-1.amazonaws.com:/ /usr/share/iodir
    */
 
   def props(jobDescriptor: BackendJobDescriptor,
