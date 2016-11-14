@@ -5,9 +5,9 @@ import java.nio.file.{Path, Paths}
 import com.amazonaws.services.s3.AmazonS3URI
 
 case class AwsFile(s3Path: String) {
-  def toLocalPath(baseDir: String = "."): Path = {
+  def toLocalPath: Path = {
     val s3 = new AmazonS3URI(s3Path)
-    Paths.get(baseDir).resolve(s3.getBucket).resolve(s3.getKey)
+    Paths.get(s3.getBucket).resolve(s3.getKey)
   }
 }
 

@@ -3,9 +3,9 @@ package cromwell.backend.impl.aws
 import java.nio.file.Paths
 
 import akka.actor.Props
-import com.amazonaws.services.s3.AmazonS3URI
 import cromwell.backend.BackendJobExecutionActor.{BackendJobExecutionResponse, SucceededResponse}
 import cromwell.backend.{BackendConfigurationDescriptor, BackendJobDescriptor, BackendJobExecutionActor}
+import wdl4s.expression.NoFunctions
 import wdl4s.values.WdlSingleFile
 
 import scala.concurrent.Future
@@ -17,21 +17,35 @@ class AwsJobExecutionActor(override val jobDescriptor: BackendJobDescriptor,
 
   override def execute: Future[BackendJobExecutionResponse] = {
 
-    val callDir = Paths.get(awsConfiguration.awsAttributes.containerMountPoint).resolve(jobDescriptor.workflowDescriptor.id.id.toString).resolve("workflow-inputs")
+    val workflowDirectory = Paths.get(awsConfiguration.awsAttributes.containerMountPoint)
+      .resolve(jobDescriptor.workflowDescriptor.id.id.toString)
 
-    val files = jobDescriptor.inputDeclarations.values.collect {
-      case WdlSingleFile(value) if AwsFile.isS3File(value) =>
-        AwsFile(value).toLocalPath(callDir.toString)
+    val workflowInputs = workflowDirectory.resolve("workflow-inputs")
+
+    val files = jobDescriptor.inputDeclarations.collect { case (key, WdlSingleFile(value)) if AwsFile.isS3File(value) =>
+      // Any input file that looks like an S3 file must be a workflow input.
+      key -> WdlSingleFile(workflowInputs.resolve(AwsFile(value).toLocalPath).toString)
     }
 
-    log.info(s"I see some files at $files")
+    log.info(s"I see some input files at $files")
+    val docker = jobDescriptor.runtimeAttributes("docker").valueString
+    val task = jobDescriptor.call.task
+    val sanitizedJobDescriptor = jobDescriptor.key.tag.replaceAll(":", "-").replaceAll("\\.", "-")
+    val callDir = workflowDirectory.resolve(sanitizedJobDescriptor)
+    val command = List(
+      s"mkdir -p $callDir",
+      s"cd $callDir",
+      s"""/bin/sh -c "${task.instantiateCommand(files, NoFunctions).get}" """,
+      s"echo $$? > command.rc"
+    ).mkString(" && ")
 
-//    val taskDefinition = registerTaskDefinition("user-command-" + jobDescriptor.toString, ???, ???, awsConfiguration.awsAttributes)
-//
-//    runTask(taskDefinition)
-//
-//    deregisterTaskDefinition(taskDefinition)
-//    Future.successful(SucceededResponse(jobDescriptor.key, ???, ???, ???, ???))
+    val name = "user-command-" + sanitizedJobDescriptor
+
+    log.info("name looks like {}, command looks like {}", name, command)
+
+    val taskDefinition = registerTaskDefinition(name, command, docker, awsConfiguration.awsAttributes)
+    runTask(taskDefinition)
+    deregisterTaskDefinition(taskDefinition)
 
     Future.successful(SucceededResponse(jobDescriptor.key, Option(0), Map.empty, None, Seq.empty))
   }

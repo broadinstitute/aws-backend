@@ -1,9 +1,6 @@
 package cromwell.backend.impl.aws
 
-import java.nio.file.Paths
-
 import akka.actor.{ActorRef, Props}
-import com.amazonaws.services.s3.AmazonS3URI
 import cromwell.backend.{BackendConfigurationDescriptor, BackendInitializationData, BackendWorkflowDescriptor, BackendWorkflowInitializationActor}
 import cromwell.core.WorkflowOptions
 import wdl4s.Call
@@ -43,7 +40,7 @@ class AwsInitializationActor(override val workflowDescriptor: BackendWorkflowDes
       val localizeWorkflowInputs = workflowDescriptor.inputs.values.collect {
         case WdlSingleFile(value) =>
           val awsFile = AwsFile(value)
-          val parentDirectory = awsFile.toLocalPath().getParent
+          val parentDirectory = awsFile.toLocalPath.getParent
           log.info("Parent directory looks like {}", parentDirectory)
           List(
             s"mkdir -p $parentDirectory",
@@ -55,7 +52,7 @@ class AwsInitializationActor(override val workflowDescriptor: BackendWorkflowDes
 
       val taskDefinition = registerTaskDefinition("localize-workflow-inputs", commands, AwsBackendActorFactory.AwsCliImage, awsAttributes)
       runTask(taskDefinition)
-      // deregisterTaskDefinition(taskDefinition)
+      deregisterTaskDefinition(taskDefinition)
       None
     })
   }
