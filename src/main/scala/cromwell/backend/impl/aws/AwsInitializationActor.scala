@@ -1,10 +1,13 @@
 package cromwell.backend.impl.aws
 
+import java.nio.file.Paths
+
 import akka.actor.{ActorRef, Props}
+import com.amazonaws.services.s3.AmazonS3URI
 import cromwell.backend.{BackendConfigurationDescriptor, BackendInitializationData, BackendWorkflowDescriptor, BackendWorkflowInitializationActor}
 import cromwell.core.WorkflowOptions
 import wdl4s.Call
-import wdl4s.values.{WdlFile, WdlValue}
+import wdl4s.values.{WdlSingleFile, WdlValue}
 
 import scala.concurrent.Future
 import scala.language.postfixOps
@@ -23,27 +26,38 @@ class AwsInitializationActor(override val workflowDescriptor: BackendWorkflowDes
   /** Copy inputs down from their S3 locations to the workflow inputs directory on the pre-mounted EFS volume. */
   override def beforeAll(): Future[Option[BackendInitializationData]] = {
 
-    // The calls within a workflow could be "jailed" to the subdirectory corresponding to their workflow, but
-    // this would require some SSM shenanigans to mkdir the <mount point>/<workflow id> directory prior to
-    // allocating the Volume.  Totally doable but not worth it for a POC.
-    val awsAttributes = awsConfiguration.awsAttributes
+    Future.fromTry(Try {
+      // The calls within a workflow could be "jailed" to the subdirectory corresponding to their workflow, but
+      // this would require some SSM shenanigans to mkdir the <mount point>/<workflow id> directory prior to
+      // allocating the Volume.  Totally doable but not worth it for a POC.
+      val awsAttributes = awsConfiguration.awsAttributes
 
-    val workflowInputsDirectory = s"${workflowDescriptor.id.id}/workflow-inputs"
+      val workflowInputsDirectory = s"${workflowDescriptor.id.id}/workflow-inputs"
 
-    val prepareWorkflowInputDirectory = List(
-      s"cd ${awsAttributes.containerMountPoint}",
-      s"mkdir -p $workflowInputsDirectory",
-      s"cd $workflowInputsDirectory")
+      val prepareWorkflowInputDirectory = List(
+        s"cd ${awsAttributes.containerMountPoint}",
+        s"mkdir -p $workflowInputsDirectory",
+        s"cd $workflowInputsDirectory")
 
-    // Workflow inputs have to be S3 cp'd onesie twosie
-    // FIXME strip the 's3://' protocol prefix from input file paths and copy with the remainder of the path to avoid collisions
-    val localizeWorkflowInputs = workflowDescriptor.inputs.values.collect { case file: WdlFile => s"/usr/bin/aws s3 cp ${file.value} ." } toList
-    val commands = (prepareWorkflowInputDirectory ++ localizeWorkflowInputs).mkString(" && ")
+      // Workflow inputs have to be S3 cp'd onesie twosie
+      val localizeWorkflowInputs = workflowDescriptor.inputs.values.collect {
+        case WdlSingleFile(value) =>
+          val awsFile = AwsFile(value)
+          val parentDirectory = awsFile.toLocalPath().getParent
+          log.info("Parent directory looks like {}", parentDirectory)
+          List(
+            s"mkdir -p $parentDirectory",
+            s"(cd $parentDirectory && /usr/bin/aws s3 cp $value .)"
+          ).mkString(" && ")
+      } toList
+      val commands = (prepareWorkflowInputDirectory ++ localizeWorkflowInputs).mkString(" && ")
+      log.info("Commands are {}", commands)
 
-    val taskDefinition = registerTaskDefinition("localize-workflow-inputs", commands, AwsBackendActorFactory.AwsCliImage, awsAttributes)
-    runTask(taskDefinition)
-    // deregisterTaskDefinition(taskDefinition)
-    Future.successful(None)
+      val taskDefinition = registerTaskDefinition("localize-workflow-inputs", commands, AwsBackendActorFactory.AwsCliImage, awsAttributes)
+      runTask(taskDefinition)
+      // deregisterTaskDefinition(taskDefinition)
+      None
+    })
   }
 
   /**
