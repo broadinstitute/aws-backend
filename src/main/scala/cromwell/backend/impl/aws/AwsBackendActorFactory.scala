@@ -22,8 +22,7 @@ case class AwsBackendActorFactory(name: String, configurationDescriptor: Backend
                                       serviceRegistryActor: ActorRef,
                                       backendSingletonActor: Option[ActorRef]): Props = AwsJobExecutionActor.props(jobDescriptor, configurationDescriptor, awsConfiguration)
 
-  override def workflowFinalizationActorProps(workflowDescriptor: BackendWorkflowDescriptor, calls: Set[Call], executionStore: ExecutionStore, outputStore: OutputStore, initializationData: Option[BackendInitializationData]): Option[Props] = None
-//  {
-//    Option(AwsFinalizationActor.props(workflowDescriptor, calls, awsConfiguration, executionStore, outputStore))
-//  }
+  override def workflowFinalizationActorProps(workflowDescriptor: BackendWorkflowDescriptor, calls: Set[Call], executionStore: ExecutionStore, outputStore: OutputStore, initializationData: Option[BackendInitializationData]): Option[Props] = {
+    Option(AwsFinalizationActor.props(workflowDescriptor, calls, awsConfiguration, executionStore, outputStore))
+  }
 }

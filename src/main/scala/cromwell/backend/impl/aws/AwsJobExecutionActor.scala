@@ -4,11 +4,13 @@ import java.nio.file.Paths
 
 import akka.actor.Props
 import cromwell.backend.BackendJobExecutionActor.{BackendJobExecutionResponse, SucceededResponse}
+import cromwell.backend.wdl.OutputEvaluator
 import cromwell.backend.{BackendConfigurationDescriptor, BackendJobDescriptor, BackendJobExecutionActor}
 import wdl4s.expression.NoFunctions
-import wdl4s.values.WdlSingleFile
+import wdl4s.values.{WdlSingleFile, WdlValue}
 
 import scala.concurrent.Future
+import scala.util.{Failure, Success, Try}
 
 
 class AwsJobExecutionActor(override val jobDescriptor: BackendJobDescriptor,
@@ -27,7 +29,7 @@ class AwsJobExecutionActor(override val jobDescriptor: BackendJobDescriptor,
       key -> WdlSingleFile(workflowInputs.resolve(AwsFile(value).toLocalPath).toString)
     }
 
-    log.info(s"I see some input files at $files")
+    log.info(s"input files: {}", files)
     val docker = jobDescriptor.runtimeAttributes("docker").valueString
     val task = jobDescriptor.call.task
     val sanitizedJobDescriptor = jobDescriptor.key.tag.replaceAll(":", "-").replaceAll("\\.", "-")
@@ -39,15 +41,29 @@ class AwsJobExecutionActor(override val jobDescriptor: BackendJobDescriptor,
       s"echo $$? > command.rc"
     ).mkString(" && ")
 
-    val name = "user-command-" + sanitizedJobDescriptor
-
-    log.info("name looks like {}, command looks like {}", name, command)
+    val name = "usercommand-" + sanitizedJobDescriptor
 
     val taskDefinition = registerTaskDefinition(name, command, docker, awsConfiguration.awsAttributes)
     runTask(taskDefinition)
     deregisterTaskDefinition(taskDefinition)
 
-    Future.successful(SucceededResponse(jobDescriptor.key, Option(0), Map.empty, None, Seq.empty))
+    def postMapper(wdlValue: WdlValue): Try[WdlValue] = Try {
+      log.info("input wdlValue: {}", wdlValue)
+
+      val mapped = wdlValue match {
+        case WdlSingleFile(value) if AwsFile.isS3File(value) => WdlSingleFile(workflowInputs.resolve(AwsFile(value).toLocalPath).toString)
+        case x => x
+      }
+      log.info("output wdlValue: {}", mapped)
+      mapped
+    }
+
+    OutputEvaluator.evaluateOutputs(jobDescriptor, NoFunctions, postMapper) match {
+      case Success(outputs) =>
+        Future.successful(SucceededResponse(jobDescriptor.key, Option(0), outputs, None, Seq.empty))
+      case Failure(x) =>
+        Future.failed(x)
+    }
   }
 }
 

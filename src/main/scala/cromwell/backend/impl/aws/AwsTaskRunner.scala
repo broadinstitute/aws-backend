@@ -43,6 +43,7 @@ trait AwsTaskRunner { self: ActorLogging with Actor =>
     val deregisterTaskDefinitionRequest = new DeregisterTaskDefinitionRequest()
       .withTaskDefinition(taskDefinition.getTaskDefinitionArn)
     ecsAsyncClient.deregisterTaskDefinition(deregisterTaskDefinitionRequest)
+    ()
   }
 
   def runTask(taskDefinition: TaskDefinition): Task = {
@@ -52,7 +53,7 @@ trait AwsTaskRunner { self: ActorLogging with Actor =>
         .withCluster(awsAttributes.clusterName)
       )
 
-    log.info("task result is {}", taskResult)
+    log.info("task result: {}", taskResult)
     // Error checking needed here, if something is wrong getTasks will be empty.
     waitUntilDone(taskResult.getTasks.asScala.head)
   }

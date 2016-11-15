@@ -3,6 +3,7 @@ package cromwell.backend.impl.aws
 import akka.actor.{ActorRef, Props}
 import cromwell.backend.{BackendConfigurationDescriptor, BackendInitializationData, BackendWorkflowDescriptor, BackendWorkflowInitializationActor}
 import cromwell.core.WorkflowOptions
+import cromwell.core.WorkflowOptions.FinalWorkflowOutputsDir
 import wdl4s.Call
 import wdl4s.values.{WdlSingleFile, WdlValue}
 
@@ -24,6 +25,10 @@ class AwsInitializationActor(override val workflowDescriptor: BackendWorkflowDes
   override def beforeAll(): Future[Option[BackendInitializationData]] = {
 
     Future.fromTry(Try {
+      if (workflowDescriptor.getWorkflowOption(FinalWorkflowOutputsDir).isEmpty) {
+        throw new RuntimeException(s"Must specify final workflow outputs directory with workflow option '${FinalWorkflowOutputsDir.name}'")
+      }
+
       // The calls within a workflow could be "jailed" to the subdirectory corresponding to their workflow, but
       // this would require some SSM shenanigans to mkdir the <mount point>/<workflow id> directory prior to
       // allocating the Volume.  Totally doable but not worth it for a POC.
@@ -41,14 +46,13 @@ class AwsInitializationActor(override val workflowDescriptor: BackendWorkflowDes
         case WdlSingleFile(value) =>
           val awsFile = AwsFile(value)
           val parentDirectory = awsFile.toLocalPath.getParent
-          log.info("Parent directory looks like {}", parentDirectory)
           List(
             s"mkdir -p $parentDirectory",
             s"(cd $parentDirectory && /usr/bin/aws s3 cp $value .)"
           ).mkString(" && ")
       } toList
       val commands = (prepareWorkflowInputDirectory ++ localizeWorkflowInputs).mkString(" && ")
-      log.info("Commands are {}", commands)
+      log.info("initialization commands: {}", commands)
 
       val taskDefinition = registerTaskDefinition("localize-workflow-inputs", commands, AwsBackendActorFactory.AwsCliImage, awsAttributes)
       runTask(taskDefinition)

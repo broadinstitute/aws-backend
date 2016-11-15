@@ -1,14 +1,14 @@
 package cromwell.backend.impl.aws
 
-import java.nio.file.Path
-
 import akka.actor.Props
 import cromwell.backend.{BackendWorkflowDescriptor, BackendWorkflowFinalizationActor}
+import cromwell.core.OutputStore.OutputEntry
+import cromwell.core.WorkflowOptions.FinalWorkflowOutputsDir
 import cromwell.core.{ExecutionStore, OutputStore}
-import wdl4s.{Call, ReportableSymbol}
+import wdl4s.Call
+import wdl4s.values.WdlSingleFile
 
 import scala.concurrent.Future
-import scala.language.postfixOps
 
 
 case class AwsFinalizationActor(override val workflowDescriptor: BackendWorkflowDescriptor,
@@ -17,16 +17,15 @@ case class AwsFinalizationActor(override val workflowDescriptor: BackendWorkflow
                                 executionStore: ExecutionStore,
                                 outputStore: OutputStore) extends BackendWorkflowFinalizationActor with AwsTaskRunner {
 
-  // Copy inputs from EFS to the output bucket
+  // Copy outputs from EFS to the output bucket
   override def afterAll(): Future[Unit] = {
 
-    def buildSourceAndDestinationPaths(reportableOutputs: Seq[ReportableSymbol]): Seq[(Path, Path)] = ???
+    val outputBucket = workflowDescriptor.getWorkflowOption(FinalWorkflowOutputsDir).get
+    val commands = outputStore.store.values.toList.flatMap(_ collect { case OutputEntry(_, _, Some(WdlSingleFile(f))) => s"/usr/bin/aws s3 cp $f $outputBucket" }).mkString(" && ")
 
-    val sourceAndDestinationPaths = buildSourceAndDestinationPaths(workflowDescriptor.workflowNamespace.workflow.outputs)
+    log.info("finalization commands: {}", commands)
 
-    val commands = sourceAndDestinationPaths.collect { case (sourcePath, destinationPath) => s"/usr/bin/aws s3 cp $sourcePath $destinationPath" } toList
-
-    val taskDefinition = registerTaskDefinition("delocalizer-" + workflowDescriptor.id.id, commands.mkString(" && "), AwsBackendActorFactory.AwsCliImage, awsConfiguration.awsAttributes)
+    val taskDefinition = registerTaskDefinition("delocalizer-" + workflowDescriptor.id.id, commands, AwsBackendActorFactory.AwsCliImage, awsConfiguration.awsAttributes)
     runTask(taskDefinition)
     deregisterTaskDefinition(taskDefinition)
     Future.successful(())
