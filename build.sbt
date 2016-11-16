@@ -75,3 +75,4 @@ val customMergeStrategy: String => MergeStrategy = {
 }
 
 assemblyMergeStrategy in assembly := customMergeStrategy
+assemblyJarName in assembly := name.value + "-" + version.value + ".jar"
