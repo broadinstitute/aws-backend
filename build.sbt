@@ -1,11 +1,10 @@
+import sbtassembly.MergeStrategy
 
 name := "aws-backend"
 
 version := "1.0"
 
 scalaVersion := "2.11.8"
-
-val akkaV = "2.3.14"
 
 val compilerSettings = List(
   "-Xlint",
@@ -25,6 +24,11 @@ val compilerSettings = List(
   "-Xfatal-warnings"
 )
 
+resolvers ++= Seq(
+  "Broad Artifactory Releases" at "https://artifactory.broadinstitute.org/artifactory/libs-release/",
+  "Broad Artifactory Snapshots" at "https://artifactory.broadinstitute.org/artifactory/libs-snapshot/"
+)
+
 /***
  * by default log buffering is set to true in sbt, which means
  * that for tests executed in parallel you will not see the 
@@ -34,13 +38,40 @@ val compilerSettings = List(
 // logBuffered in Test := false
 
 libraryDependencies ++= Seq(
+  "org.broadinstitute" %% "cromwell-backend" % "23-ee2988d-SNAPSHOT" % Provided,
   "com.amazonaws" % "aws-java-sdk" % "1.11.41",
   "com.github.kxbmap" %% "configs" % "0.4.2",
-  "com.typesafe" % "config" % "1.3.0",
-  "org.typelevel" %% "cats" % "0.7.2",
-  "com.typesafe.akka" %% "akka-actor" % akkaV,
-  "org.scalatest" %% "scalatest" % "2.2.6" % Test,
-  "com.github.pathikrit" %% "better-files" % "2.13.0"
+  "org.scalatest" %% "scalatest" % "2.2.6" % Test
 )
 
 scalacOptions ++= compilerSettings
+
+val customMergeStrategy: String => MergeStrategy = {
+  case x if Assembly.isConfigFile(x) =>
+    MergeStrategy.concat
+  case PathList(ps@_*) if Assembly.isReadme(ps.last) || Assembly.isLicenseFile(ps.last) =>
+    MergeStrategy.rename
+  case PathList("META-INF", path@_*) =>
+    path map {
+      _.toLowerCase
+    } match {
+      case ("manifest.mf" :: Nil) | ("index.list" :: Nil) | ("dependencies" :: Nil) =>
+        MergeStrategy.discard
+      case ps@(x :: xs) if ps.last.endsWith(".sf") || ps.last.endsWith(".dsa") =>
+        MergeStrategy.discard
+      case "plexus" :: xs =>
+        MergeStrategy.discard
+      case "spring.tooling" :: xs =>
+        MergeStrategy.discard
+      case "services" :: xs =>
+        MergeStrategy.filterDistinctLines
+      case ("spring.schemas" :: Nil) | ("spring.handlers" :: Nil) =>
+        MergeStrategy.filterDistinctLines
+      case _ => MergeStrategy.deduplicate
+    }
+  case "asm-license.txt" | "overview.html" | "cobertura.properties" =>
+    MergeStrategy.discard
+  case _ => MergeStrategy.deduplicate
+}
+
+assemblyMergeStrategy in assembly := customMergeStrategy
