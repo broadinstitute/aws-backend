@@ -40,7 +40,7 @@ resolvers ++= Seq(
 // logBuffered in Test := false
 
 libraryDependencies ++= Seq(
-  "org.broadinstitute" %% "cromwell-backend" % "23-ee2988d-SNAPSHOT" % Provided,
+  "org.broadinstitute" %% "cromwell-backend" % "23-9bd8b71-SNAP" % Provided,
   "com.github.pathikrit" %% "better-files" % betterFilesV,
   "com.amazonaws" % "aws-java-sdk" % "1.11.41",
   "com.github.kxbmap" %% "configs" % "0.4.2",
@@ -60,13 +60,13 @@ val customMergeStrategy: String => MergeStrategy = {
     } match {
       case ("manifest.mf" :: Nil) | ("index.list" :: Nil) | ("dependencies" :: Nil) =>
         MergeStrategy.discard
-      case ps@(x :: xs) if ps.last.endsWith(".sf") || ps.last.endsWith(".dsa") =>
+      case ps@(_ :: _) if ps.last.endsWith(".sf") || ps.last.endsWith(".dsa") =>
         MergeStrategy.discard
-      case "plexus" :: xs =>
+      case "plexus" :: _ =>
         MergeStrategy.discard
-      case "spring.tooling" :: xs =>
+      case "spring.tooling" :: _ =>
         MergeStrategy.discard
-      case "services" :: xs =>
+      case "services" :: _ =>
         MergeStrategy.filterDistinctLines
       case ("spring.schemas" :: Nil) | ("spring.handlers" :: Nil) =>
         MergeStrategy.filterDistinctLines
@@ -79,3 +79,4 @@ val customMergeStrategy: String => MergeStrategy = {
 
 assemblyMergeStrategy in assembly := customMergeStrategy
 assemblyJarName in assembly := name.value + "-" + version.value + ".jar"
+assemblyOption in assembly := (assemblyOption in assembly).value.copy(includeScala = false)
