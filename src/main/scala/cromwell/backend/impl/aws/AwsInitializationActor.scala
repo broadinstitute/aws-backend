@@ -4,7 +4,7 @@ import akka.actor.{ActorRef, Props}
 import cromwell.backend.{BackendConfigurationDescriptor, BackendInitializationData, BackendWorkflowDescriptor, BackendWorkflowInitializationActor}
 import cromwell.core.WorkflowOptions
 import cromwell.core.WorkflowOptions.FinalWorkflowOutputsDir
-import wdl4s.Call
+import wdl4s.TaskCall
 import wdl4s.values.{WdlSingleFile, WdlValue}
 
 import scala.concurrent.Future
@@ -13,7 +13,7 @@ import scala.util.{Success, Try}
 
 
 class AwsInitializationActor(override val workflowDescriptor: BackendWorkflowDescriptor,
-                             override val calls: Set[Call],
+                             override val calls: Set[TaskCall],
                              override val serviceRegistryActor: ActorRef,
                              val awsConfiguration: AwsConfiguration) extends BackendWorkflowInitializationActor with AwsTaskRunner {
 
@@ -73,6 +73,6 @@ class AwsInitializationActor(override val workflowDescriptor: BackendWorkflowDes
 }
 
 object AwsInitializationActor {
-  def props(workflowDescriptor: BackendWorkflowDescriptor, calls: Set[Call], serviceRegistryActor: ActorRef, awsConfiguration: AwsConfiguration): Props =
+  def props(workflowDescriptor: BackendWorkflowDescriptor, calls: Set[TaskCall], serviceRegistryActor: ActorRef, awsConfiguration: AwsConfiguration): Props =
     Props(new AwsInitializationActor(workflowDescriptor, calls, serviceRegistryActor, awsConfiguration))
 }

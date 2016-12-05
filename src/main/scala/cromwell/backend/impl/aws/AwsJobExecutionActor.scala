@@ -3,7 +3,7 @@ package cromwell.backend.impl.aws
 import java.nio.file.Paths
 
 import akka.actor.Props
-import cromwell.backend.BackendJobExecutionActor.{BackendJobExecutionResponse, SucceededResponse}
+import cromwell.backend.BackendJobExecutionActor.{BackendJobExecutionResponse, JobSucceededResponse}
 import cromwell.backend.wdl.OutputEvaluator
 import cromwell.backend.{BackendConfigurationDescriptor, BackendJobDescriptor, BackendJobExecutionActor}
 import wdl4s.values.{WdlSingleFile, WdlValue}
@@ -62,7 +62,7 @@ class AwsJobExecutionActor(override val jobDescriptor: BackendJobDescriptor,
 
     OutputEvaluator.evaluateOutputs(jobDescriptor, functions, postMapper) match {
       case Success(outputs) =>
-        Future.successful(SucceededResponse(jobDescriptor.key, Option(0), outputs, None, Seq.empty))
+        Future.successful(JobSucceededResponse(jobDescriptor.key, Option(0), outputs, None, Seq.empty))
       case Failure(x) =>
         Future.failed(x)
     }
