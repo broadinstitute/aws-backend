@@ -27,8 +27,7 @@ val compilerSettings = List(
 )
 
 resolvers ++= Seq(
-  "Broad Artifactory Releases" at "https://artifactory.broadinstitute.org/artifactory/libs-release/",
-  "Broad Artifactory Snapshots" at "https://artifactory.broadinstitute.org/artifactory/libs-snapshot/"
+  "Broad Artifactory Releases" at "https://artifactory.broadinstitute.org/artifactory/libs-release/"
 )
 
 /***
@@ -40,7 +39,7 @@ resolvers ++= Seq(
 // logBuffered in Test := false
 
 libraryDependencies ++= Seq(
-  "org.broadinstitute" %% "cromwell-backend" % "23-9bd8b71-SNAP" % Provided,
+  "org.broadinstitute" %% "cromwell-backend" % "23" % Provided,
   "com.github.pathikrit" %% "better-files" % betterFilesV,
   "com.amazonaws" % "aws-java-sdk" % "1.11.41",
   "com.github.kxbmap" %% "configs" % "0.4.2",
