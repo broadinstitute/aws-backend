@@ -3,7 +3,10 @@ package cromwell.backend.impl.aws
 import akka.actor.{ActorRef, Props}
 import cromwell.backend._
 import cromwell.core.CallOutputs
+import cromwell.core.JobExecutionToken.JobExecutionTokenType
+import net.ceedubs.ficus.Ficus._
 import wdl4s.TaskCall
+import wdl4s.expression.WdlStandardLibraryFunctions
 
 
 object AwsBackendActorFactory {
@@ -31,5 +34,16 @@ case class AwsBackendActorFactory(name: String, configurationDescriptor: Backend
                                               workflowOutputs: CallOutputs,
                                               initializationData: Option[BackendInitializationData]): Option[Props] = {
     Option(AwsFinalizationActor.props(workflowDescriptor, calls, awsConfiguration, jobExecutionMap, workflowOutputs))
+  }
+
+  override def jobExecutionTokenType: JobExecutionTokenType = {
+    val concurrentJobLimit = configurationDescriptor.backendConfig.as[Option[Int]]("concurrent-job-limit").orElse(Option(10))
+
+    JobExecutionTokenType("AWS Backend", concurrentJobLimit)
+  }
+
+  override def expressionLanguageFunctions(workflowDescriptor: BackendWorkflowDescriptor, jobKey: BackendJobDescriptorKey, initializationData: Option[BackendInitializationData]): WdlStandardLibraryFunctions = {
+    val jobDescriptor = BackendJobDescriptor(workflowDescriptor, jobKey, Map.empty, Map.empty)
+    AwsStandardLibraryFunctions(jobDescriptor, awsConfiguration.awsAttributes)
   }
 }

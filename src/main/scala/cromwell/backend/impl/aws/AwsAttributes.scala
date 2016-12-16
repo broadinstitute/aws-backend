@@ -18,7 +18,8 @@ object AwsAttributes {
     "cluster-name",
     "container-memory-mib",
     "host-mount-point",
-    "container-mount-point"
+    "container-mount-point",
+    "concurrent-job-limit"
   )
 
   private val context = "AWS"

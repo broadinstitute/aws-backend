@@ -1,7 +1,9 @@
 package cromwell.backend.impl.aws
 
 import akka.actor.{Actor, ActorLogging}
-import com.amazonaws.auth.AWSCredentials
+import com.amazonaws.ClientConfiguration
+import com.amazonaws.auth.{AWSCredentials, AWSCredentialsProvider}
+import com.amazonaws.retry.RetryPolicy
 import com.amazonaws.services.ecs.AmazonECSAsyncClient
 import com.amazonaws.services.ecs.model._
 import cromwell.backend.impl.aws.util.AwsSdkAsyncHandler
@@ -11,46 +13,64 @@ import scala.concurrent.Await
 import scala.concurrent.duration.Duration
 
 
-trait AwsTaskRunner { self: ActorLogging with Actor =>
+trait AwsTaskRunner {
+  self: ActorLogging with Actor =>
 
-  def registerTaskDefinition(name: String, command: String, dockerImage: String, awsAttributes: AwsAttributes): TaskDefinition = {
-    val volumeProperties = new HostVolumeProperties().withSourcePath(awsAttributes.hostMountPoint)
-    val cromwellVolume = "cromwell-volume"
-    val volume = new Volume().withHost(volumeProperties).withName(cromwellVolume)
+  var imageToTaskDefinition: Map[String, TaskDefinition] = Map.empty
 
-    val mountPoint = new MountPoint().withSourceVolume(cromwellVolume).withContainerPath(awsAttributes.containerMountPoint).withReadOnly(false)
-    val accessKey = new KeyValuePair().withName("AWS_ACCESS_KEY_ID").withValue(awsAttributes.accessKeyId)
-    val secretAccessKey = new KeyValuePair().withName("AWS_SECRET_ACCESS_KEY").withValue(awsAttributes.secretKey)
+  val containerName = "cromwell-container-name"
 
-    val containerDefinition = new ContainerDefinition()
-      .withName(name)
+  private def getOrCreateTaskDefinition(image: String): TaskDefinition = {
+    if (!imageToTaskDefinition.contains(image)) {
+      // DANGER total hack.  This calls into question the whole AWS backend approach.
+      // It also completely punts on handling memory or CPU resources and task definitions
+      // are no longer being cleaned up.
+      image.intern.synchronized {
+        if (!imageToTaskDefinition.contains(image)) {
+          val volumeProperties = new HostVolumeProperties().withSourcePath(awsAttributes.hostMountPoint)
+          val cromwellVolume = "cromwell-volume"
+          val volume = new Volume().withHost(volumeProperties).withName(cromwellVolume)
+
+          val mountPoint = new MountPoint().withSourceVolume(cromwellVolume).withContainerPath(awsAttributes.containerMountPoint).withReadOnly(false)
+          val accessKey = new KeyValuePair().withName("AWS_ACCESS_KEY_ID").withValue(awsAttributes.accessKeyId)
+          val secretAccessKey = new KeyValuePair().withName("AWS_SECRET_ACCESS_KEY").withValue(awsAttributes.secretKey)
+
+          val containerDefinition = new ContainerDefinition()
+            .withName(containerName)
+            .withCommand("/bin/sh", "-xv", "-c", "echo Default command")
+            .withImage(image)
+            .withMemory(awsAttributes.containerMemoryMib)
+            .withMountPoints(mountPoint)
+            .withEnvironment(accessKey, secretAccessKey)
+            .withEssential(true)
+
+          val registerTaskDefinitionRequest = new RegisterTaskDefinitionRequest()
+            .withFamily("family-cromwell")
+            .withContainerDefinitions(containerDefinition)
+            .withVolumes(volume)
+
+          val taskDefinition = ecsAsyncClient.registerTaskDefinition(registerTaskDefinitionRequest).getTaskDefinition
+          imageToTaskDefinition += image -> taskDefinition
+        }
+      }
+    }
+    imageToTaskDefinition(image)
+  }
+
+  def runTask(command: String, dockerImage: String, awsAttributes: AwsAttributes): Task = {
+
+    val taskDefinition = getOrCreateTaskDefinition(dockerImage)
+
+    val commandOverride = new ContainerOverride()
       .withCommand("/bin/sh", "-xv", "-c", command)
-      .withImage(dockerImage)
-      .withMemory(awsAttributes.containerMemoryMib)
-      .withMountPoints(mountPoint)
-      .withEnvironment(accessKey, secretAccessKey)
-      .withEssential(true)
+      .withName(containerName)
+    val taskOverride = new TaskOverride().withContainerOverrides(commandOverride)
 
-    val registerTaskDefinitionRequest = new RegisterTaskDefinitionRequest()
-      .withFamily("family-" + name)
-      .withContainerDefinitions(containerDefinition)
-      .withVolumes(volume)
-
-    ecsAsyncClient.registerTaskDefinition(registerTaskDefinitionRequest).getTaskDefinition
-  }
-
-  def deregisterTaskDefinition(taskDefinition: TaskDefinition): Unit = {
-    val deregisterTaskDefinitionRequest = new DeregisterTaskDefinitionRequest()
-      .withTaskDefinition(taskDefinition.getTaskDefinitionArn)
-    ecsAsyncClient.deregisterTaskDefinition(deregisterTaskDefinitionRequest)
-    ()
-  }
-
-  def runTask(taskDefinition: TaskDefinition): Task = {
     val taskResult =
       ecsAsyncClient.runTask(new RunTaskRequest()
         .withTaskDefinition(taskDefinition.getTaskDefinitionArn)
         .withCluster(awsAttributes.clusterName)
+        .withOverrides(taskOverride)
       )
 
     log.info("task result: {}", taskResult)
@@ -60,7 +80,7 @@ trait AwsTaskRunner { self: ActorLogging with Actor =>
 
   def awsConfiguration: AwsConfiguration
 
-  val awsAttributes = awsConfiguration.awsAttributes
+  val awsAttributes: AwsAttributes = awsConfiguration.awsAttributes
 
   val credentials = new AWSCredentials {
     override def getAWSAccessKeyId: String = awsAttributes.accessKeyId
@@ -68,7 +88,17 @@ trait AwsTaskRunner { self: ActorLogging with Actor =>
     override def getAWSSecretKey: String = awsAttributes.secretKey
   }
 
-  val ecsAsyncClient = new AmazonECSAsyncClient(credentials)
+  val clientConfiguration = new ClientConfiguration()
+  clientConfiguration.setMaxErrorRetry(25)
+  clientConfiguration.setRetryPolicy(new RetryPolicy(null, null, 25, true))
+
+  val credentialsProvider = new AWSCredentialsProvider {
+    override def refresh(): Unit = ()
+
+    override def getCredentials: AWSCredentials = credentials
+  }
+
+  val ecsAsyncClient = new AmazonECSAsyncClient(credentialsProvider, clientConfiguration)
 
 
   protected def waitUntilDone(task: Task): Task = {
@@ -89,7 +119,7 @@ trait AwsTaskRunner { self: ActorLogging with Actor =>
         td
       case notStopped =>
         log.info(s"Still waiting for completion. Last known status: {}", notStopped.map(_.getLastStatus).getOrElse("UNKNOWN"))
-        Thread.sleep(2000)
+        Thread.sleep(5000)
         waitUntilDone(task)
     }
   }

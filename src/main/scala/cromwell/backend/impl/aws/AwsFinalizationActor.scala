@@ -3,9 +3,8 @@ package cromwell.backend.impl.aws
 import java.nio.file.Paths
 
 import akka.actor.Props
-import cromwell.backend.{BackendWorkflowDescriptor, BackendWorkflowFinalizationActor, JobExecutionMap}
+import cromwell.backend.{BackendConfigurationDescriptor, BackendWorkflowDescriptor, BackendWorkflowFinalizationActor, JobExecutionMap}
 import cromwell.core.{CallOutputs, JobOutput}
-import cromwell.core.WorkflowOptions.FinalWorkflowOutputsDir
 import wdl4s.TaskCall
 import wdl4s.values.WdlSingleFile
 
@@ -21,20 +20,18 @@ case class AwsFinalizationActor(override val workflowDescriptor: BackendWorkflow
   // Copy outputs from EFS to the output bucket
   override def afterAll(): Future[Unit] = {
 
-    val outputBucket = workflowDescriptor.getWorkflowOption(FinalWorkflowOutputsDir).get
+    val outputBucket = awsConfiguration.awsAttributes.root + "/workflow-outputs"
     val commands = outputStore.values.collect({ case JobOutput(WdlSingleFile(f)) =>
       val relativePath = Paths.get(awsAttributes.hostMountPoint).relativize(Paths.get(f))
       s"/usr/bin/aws s3 cp $f $outputBucket/$relativePath" }).mkString(" && ")
 
     log.info("finalization commands: {}", commands)
 
-    val taskDefinition = registerTaskDefinition("delocalizer-" + workflowDescriptor.id.id, commands, AwsBackendActorFactory.AwsCliImage, awsConfiguration.awsAttributes)
-    runTask(taskDefinition)
-    deregisterTaskDefinition(taskDefinition)
+    runTask(commands, AwsBackendActorFactory.AwsCliImage, awsConfiguration.awsAttributes)
     Future.successful(())
   }
 
-  override val configurationDescriptor = awsConfiguration.configurationDescriptor
+  override val configurationDescriptor: BackendConfigurationDescriptor = awsConfiguration.configurationDescriptor
 }
 
 object AwsFinalizationActor {
