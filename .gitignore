@@ -1,4 +1,12 @@
-.idea/
-project/target/
-target/
-lib/
+# common scala config
+*~
+.DS_Store
+.artifactory
+.idea/*
+!/.idea/inspectionProfiles/
+.idea/inspectionProfiles/*
+!/.idea/inspectionProfiles/Project_Default.xml
+target
+
+# custom config
+lib
