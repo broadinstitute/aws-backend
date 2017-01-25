@@ -3,11 +3,12 @@ package cromwell.backend.impl.aws
 import com.typesafe.config.Config
 import cromwell.backend.io.{JobPaths, WorkflowPaths}
 import cromwell.backend.standard.{StandardInitializationActor, StandardInitializationActorParams, StandardInitializationData, StandardValidatedRuntimeAttributesBuilder}
-import cromwell.backend.validation.DockerValidation
-import cromwell.backend.{BackendInitializationData, BackendJobDescriptorKey, BackendWorkflowDescriptor}
+import cromwell.backend.validation.{CpuValidation, DockerValidation, MemoryValidation}
+import cromwell.backend.{BackendInitializationData, BackendJobDescriptorKey, BackendWorkflowDescriptor, MemorySize}
 import cromwell.core.JobKey
 import cromwell.core.path._
-import wdl4s.values.WdlSingleFile
+import wdl4s.parser.MemoryUnit
+import wdl4s.values.{WdlArray, WdlSingleFile, WdlValue}
 
 import scala.collection.immutable.Seq
 import scala.concurrent.Future
@@ -28,7 +29,11 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
   override val awsConfiguration = AwsConfiguration(configurationDescriptor)
 
   override def runtimeAttributesBuilder: StandardValidatedRuntimeAttributesBuilder = {
-    super.runtimeAttributesBuilder.withValidation(DockerValidation.instance)
+    super.runtimeAttributesBuilder.withValidation(
+      DockerValidation.instance,
+      MemoryValidation.withDefaultMemory(MemorySize(4, MemoryUnit.GiB)),
+      CpuValidation.default
+    )
   }
 
   lazy val workflowRootDirectory: Path = DefaultPathBuilder
@@ -47,30 +52,35 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
   /** Copy inputs down from their S3 locations to the workflow inputs directory on the pre-mounted EFS volume. */
   override def beforeAll(): Future[Option[BackendInitializationData]] = {
 
+    def pathsFromWdlValue(wdlValue: WdlValue): Seq[Path] = wdlValue match {
+      case WdlSingleFile(value) => Seq(PathFactory.buildPath(value, pathBuilders))
+      case a: WdlArray => a.value.toList flatMap pathsFromWdlValue
+      case _ => Seq.empty
+    }
+
     Future.fromTry(Try {
       val awsAttributes = awsConfiguration.awsAttributes
 
-      val prepareWorkflowInputDirectory = List(
-        s"cd ${awsAttributes.containerMountPoint}",
-        s"mkdir -m 777 -p $workflowInputsDirectory",
-        s"chmod 777 $workflowRootDirectory",
-        s"cd $workflowInputsDirectory")
-
       // Workflow inputs have to be S3 cp'd onesie twosie
-      val localizeWorkflowInputs: Seq[String] = workflowDescriptor.knownValues.values collect {
-        case WdlSingleFile(value) => PathFactory.buildPath(value, pathBuilders)
-      } collect {
+      val paths = workflowDescriptor.knownValues.values flatMap pathsFromWdlValue
+      val localizeWorkflowInputs: Seq[String] = paths collect {
         case path: MappedPath =>
           val parentDirectory = path.parent
           List(
             s"mkdir -m 777 -p $parentDirectory",
             s"(cd $parentDirectory && /usr/bin/aws s3 cp ${path.prefixedPathAsString} .)"
-          ).mkString(" && ")
+          ).mkString(" && \\\n    ")
       } toList
-      val commands = (prepareWorkflowInputDirectory ++ localizeWorkflowInputs).mkString(" && ")
+      val commands = localizeWorkflowInputs.mkString(" && \\\n")
       log.info("initialization commands: {}", commands)
 
-      runTask(commands, AwsBackendActorFactory.AwsCliImage, awsAttributes)
+      val allPermissions = "rwxrwxrwx"
+      workflowRootDirectory.createDirectories().chmod(allPermissions)
+      workflowInputsDirectory.createDirectories().chmod(allPermissions)
+      val localizationScript = workflowInputsDirectory.createTempFile("localization", ".sh").chmod(allPermissions)
+      localizationScript.write(commands)
+
+      runTask(s"sh ${localizationScript.pathWithoutScheme}", AwsBackendActorFactory.AwsCliImage, MemorySize(4096, MemoryUnit.MiB), 1, awsAttributes)
       Option(initializationData)
     })
   }

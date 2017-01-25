@@ -6,11 +6,11 @@ import java.util.Date
 import com.amazonaws.services.ecs.model.{DescribeTasksRequest, Task}
 import cromwell.backend.async.{ExecutionHandle, FailedNonRetryableExecutionHandle, PendingExecutionHandle}
 import cromwell.backend.standard.{StandardAsyncExecutionActor, StandardAsyncExecutionActorParams, StandardAsyncJob}
-import cromwell.backend.validation.{DockerValidation, RuntimeAttributesValidation}
+import cromwell.backend.validation.{CpuValidation, DockerValidation, MemoryValidation, RuntimeAttributesValidation}
 import cromwell.backend.{BackendInitializationData, BackendJobLifecycleActor}
+import cromwell.core.ExecutionEvent
 import cromwell.core.path.{MappedPath, Path, PathFactory}
 import cromwell.core.retry.SimpleExponentialBackoff
-import cromwell.core.{CromwellFatalException, ExecutionEvent}
 import wdl4s.values.{WdlFile, WdlSingleFile}
 
 import scala.collection.JavaConverters._
@@ -45,7 +45,9 @@ class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecut
 
     val cromwellCommand = redirectOutputs(s"/bin/bash ${jobPaths.script}")
     val docker = RuntimeAttributesValidation.extract(DockerValidation.instance, validatedRuntimeAttributes)
-    val runTaskResult = runTaskAsync(cromwellCommand, docker, awsConfiguration.awsAttributes)
+    val memory = RuntimeAttributesValidation.extract(MemoryValidation.instance, validatedRuntimeAttributes)
+    val cpu = RuntimeAttributesValidation.extract(CpuValidation.instance, validatedRuntimeAttributes)
+    val runTaskResult = doRunTask(cromwellCommand, docker, memory, cpu, awsConfiguration.awsAttributes)
 
     log.info("AWS submission completed:\n{}", runTaskResult)
     val taskArn = runTaskResult.getTasks.asScala.head.getTaskArn
@@ -60,12 +62,25 @@ class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecut
       .withCluster(awsAttributes.clusterName)
       .withTasks(List(taskArn).asJava)
 
-    val describeTasksResult = ecsAsyncClient.describeTasks(describeTasksRequest)
 
-    val tasks = describeTasksResult.getTasks.asScala
-    val task = tasks.headOption.getOrElse(
-      throw CromwellFatalException(new RuntimeException(s"Task $taskArn not found.")))
-    AwsRunStatus(task)
+    def describeTask(count: Int = 1): AwsRunStatus = {
+      val describeTasksResult = ecsAsyncClient.describeTasks(describeTasksRequest)
+
+      val tasks = describeTasksResult.getTasks.asScala
+
+      tasks.headOption match {
+        case Some(t) => AwsRunStatus(t)
+        case None =>
+          // This is purposefully not a fatal exception as there can be transient eventual consistency failures.
+          // A non-`CromwellFatalException` exception here will be retried.
+          // throw new RuntimeException(s"Task $taskArn not found.")
+          log.info(s"Could not find task for arn $taskArn attempt $count, retrying.")
+          Thread.sleep(1000)
+          describeTask(count + 1)
+      }
+    }
+
+    describeTask()
   }
 
   override def isTerminal(runStatus: AwsRunStatus): Boolean = isStopped(runStatus.task)

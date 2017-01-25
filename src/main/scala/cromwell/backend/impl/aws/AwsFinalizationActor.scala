@@ -3,7 +3,8 @@ package cromwell.backend.impl.aws
 import cromwell.backend._
 import cromwell.backend.standard.{StandardFinalizationActor, StandardFinalizationActorParams}
 import cromwell.core.JobOutput
-import cromwell.core.path.DefaultPathBuilder
+import cromwell.core.path.{DefaultPathBuilder, Path}
+import wdl4s.parser.MemoryUnit
 import wdl4s.values.WdlSingleFile
 
 import scala.concurrent.Future
@@ -17,6 +18,12 @@ case class AwsFinalizationActor(override val standardParams: StandardFinalizatio
 
   override lazy val awsConfiguration: AwsConfiguration = awsBackendInitializationData.awsConfiguration
 
+  lazy val workflowRootDirectory: Path = DefaultPathBuilder
+    .get(awsAttributes.containerMountPoint)
+    .resolve(workflowDescriptor.rootWorkflowId.toString)
+
+  lazy val workflowInputsDirectory: Path = workflowRootDirectory.resolve("workflow-inputs")
+
   // Copy outputs from EFS to the output bucket
   override def afterAll(): Future[Unit] = {
     if (initializationDataOption.isDefined) {
@@ -24,11 +31,15 @@ case class AwsFinalizationActor(override val standardParams: StandardFinalizatio
       val commands = workflowOutputs.values.collect({ case JobOutput(WdlSingleFile(f)) =>
         val outputPath = awsBackendInitializationData.workflowPaths.getPath(f).get
         val relativePath = DefaultPathBuilder.get(awsAttributes.hostMountPoint).relativize(outputPath)
-        s"/usr/bin/aws s3 cp $f $outputBucket/$relativePath" }).mkString(" && ")
+        s"/usr/bin/aws s3 cp $f $outputBucket/$relativePath" }).mkString(" && \\\n")
 
       log.info("finalization commands: {}", commands)
 
-      runTask(commands, AwsBackendActorFactory.AwsCliImage, awsConfiguration.awsAttributes)
+      val allPermissions = "rwxrwxrwx"
+      val delocalizationScript = workflowInputsDirectory.createTempFile("delocalization", ".sh").chmod(allPermissions)
+      delocalizationScript.write(commands)
+
+      runTask(s"sh ${delocalizationScript.pathWithoutScheme}", AwsBackendActorFactory.AwsCliImage, MemorySize(4096, MemoryUnit.MiB), 1, awsAttributes)
     }
     super.afterAll()
   }
