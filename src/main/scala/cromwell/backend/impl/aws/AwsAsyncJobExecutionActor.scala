@@ -10,7 +10,7 @@ import cromwell.backend.validation.{DockerValidation, RuntimeAttributesValidatio
 import cromwell.backend.{BackendInitializationData, BackendJobLifecycleActor}
 import cromwell.core.path.{MappedPath, Path, PathFactory}
 import cromwell.core.retry.SimpleExponentialBackoff
-import cromwell.core.{CromwellFatalException, ExecutionEvent}
+import cromwell.core.ExecutionEvent
 import wdl4s.values.{WdlFile, WdlSingleFile}
 
 import scala.collection.JavaConverters._
@@ -63,9 +63,14 @@ class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecut
     val describeTasksResult = ecsAsyncClient.describeTasks(describeTasksRequest)
 
     val tasks = describeTasksResult.getTasks.asScala
-    val task = tasks.headOption.getOrElse(
-      throw CromwellFatalException(new RuntimeException(s"Task $taskArn not found.")))
-    AwsRunStatus(task)
+
+    tasks.headOption match {
+      case Some(t) => AwsRunStatus(t)
+      case None =>
+        // This is purposefully not a fatal exception as there can be transient eventual consistency failures.
+        // A non-`CromwellFatalException` exception here will be retried.
+        throw new RuntimeException(s"Task $taskArn not found.")
+    }
   }
 
   override def isTerminal(runStatus: AwsRunStatus): Boolean = isStopped(runStatus.task)
