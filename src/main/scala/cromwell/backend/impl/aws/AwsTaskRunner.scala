@@ -57,12 +57,11 @@ trait AwsTaskRunner {
     imageToTaskDefinition(image)
   }
 
-  def runTask(command: String, dockerImage: String, awsAttributes: AwsAttributes): Task = {
-
+  def runTaskAsync(command: String, dockerImage: String, awsAttributes: AwsAttributes): RunTaskResult = {
     val taskDefinition = getOrCreateTaskDefinition(dockerImage)
 
     val commandOverride = new ContainerOverride()
-      .withCommand("/bin/sh", "-xv", "-c", command)
+      .withCommand("/bin/sh", "-c", command)
       .withName(containerName)
     val taskOverride = new TaskOverride().withContainerOverrides(commandOverride)
 
@@ -74,34 +73,38 @@ trait AwsTaskRunner {
       )
 
     log.info("task result: {}", taskResult)
+    taskResult
+  }
+
+  def runTask(command: String, dockerImage: String, awsAttributes: AwsAttributes): Task = {
+    val taskResult = runTaskAsync(command, dockerImage, awsAttributes)
     // Error checking needed here, if something is wrong getTasks will be empty.
     waitUntilDone(taskResult.getTasks.asScala.head)
   }
 
   def awsConfiguration: AwsConfiguration
 
-  val awsAttributes: AwsAttributes = awsConfiguration.awsAttributes
+  lazy val awsAttributes: AwsAttributes = awsConfiguration.awsAttributes
 
-  val credentials = new AWSCredentials {
+  lazy val credentials = new AWSCredentials {
     override def getAWSAccessKeyId: String = awsAttributes.accessKeyId
 
     override def getAWSSecretKey: String = awsAttributes.secretKey
   }
 
-  val clientConfiguration = new ClientConfiguration()
+  final val clientConfiguration = new ClientConfiguration()
   clientConfiguration.setMaxErrorRetry(25)
   clientConfiguration.setRetryPolicy(new RetryPolicy(null, null, 25, true))
 
-  val credentialsProvider = new AWSCredentialsProvider {
+  lazy val credentialsProvider = new AWSCredentialsProvider {
     override def refresh(): Unit = ()
 
     override def getCredentials: AWSCredentials = credentials
   }
 
-  val ecsAsyncClient = new AmazonECSAsyncClient(credentialsProvider, clientConfiguration)
+  lazy val ecsAsyncClient = new AmazonECSAsyncClient(credentialsProvider, clientConfiguration)
 
-
-  protected def waitUntilDone(task: Task): Task = {
+  protected def describeTasks(task: Task): DescribeTasksResult = {
     val taskArn = task.getTaskArn
     log.info("Checking status for {}", taskArn)
     val describeTasksRequest = new DescribeTasksRequest()
@@ -112,10 +115,42 @@ trait AwsTaskRunner {
     val _ = ecsAsyncClient.describeTasksAsync(describeTasksRequest, resultHandler)
 
     val describedTasks = Await.result(resultHandler.future, Duration.Inf)
-    val taskDescription = describedTasks.result.getTasks.asScala.headOption
+    describedTasks.result
+  }
+
+  protected def isStopped(describedTasks: DescribeTasksResult): Boolean = {
+    describedTasks.getTasks.asScala.headOption match {
+      case Some(describedTask) if isStopped(describedTask) => true
+      case None => false // TODO: If we don't find our task... then we should error?
+      case _ => false
+    }
+  }
+
+  protected def isStopped(describedTask: Task): Boolean = {
+    describedTask.getLastStatus == DesiredStatus.STOPPED.toString
+  }
+
+  protected def isSuccess(describedTask: Task): Boolean = {
+    val containerReturnCodeOption = for {
+      container <- describedTask.getContainers.asScala.headOption
+      containerReturnCode <- Option(container.getExitCode)
+    } yield containerReturnCode.toInt
+    containerReturnCodeOption.isDefined
+  }
+
+  protected def containerReasonExit(describedTask: Task): Option[String] = {
+    for {
+      container <- describedTask.getContainers.asScala.headOption
+      containerReason <- Option(container.getReason)
+    } yield containerReason
+  }
+
+  protected def waitUntilDone(task: Task): Task = {
+    val describedTasks = describeTasks(task)
+    val taskDescription = describedTasks.getTasks.asScala.headOption
     taskDescription match {
       case Some(td) if td.getLastStatus == DesiredStatus.STOPPED.toString =>
-        logResult(describedTasks.result)
+        logResult(describedTasks)
         td
       case notStopped =>
         log.info(s"Still waiting for completion. Last known status: {}", notStopped.map(_.getLastStatus).getOrElse("UNKNOWN"))

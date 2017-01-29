@@ -1,17 +1,16 @@
 package cromwell.backend.impl.aws
 
-import java.nio.file.Paths
 import java.util.Base64
 
 import akka.actor.Props
 import cromwell.backend.BackendJobExecutionActor.{BackendJobExecutionResponse, JobSucceededResponse}
 import cromwell.backend.wdl.OutputEvaluator
 import cromwell.backend.{BackendConfigurationDescriptor, BackendJobDescriptor, BackendJobExecutionActor}
+import cromwell.core.path.DefaultPathBuilder
 import wdl4s.values.{WdlFile, WdlSingleFile, WdlValue}
 
 import scala.concurrent.Future
 import scala.util.{Failure, Success, Try}
-
 
 class AwsJobExecutionActor(override val jobDescriptor: BackendJobDescriptor,
                            override val configurationDescriptor: BackendConfigurationDescriptor,
@@ -19,7 +18,7 @@ class AwsJobExecutionActor(override val jobDescriptor: BackendJobDescriptor,
 
   override def execute: Future[BackendJobExecutionResponse] = {
 
-    val workflowDirectory = Paths.get(awsConfiguration.awsAttributes.containerMountPoint)
+    val workflowDirectory = DefaultPathBuilder.get(awsConfiguration.awsAttributes.containerMountPoint)
       .resolve(jobDescriptor.workflowDescriptor.id.id.toString)
 
     val workflowInputs = workflowDirectory.resolve("workflow-inputs")
@@ -27,15 +26,15 @@ class AwsJobExecutionActor(override val jobDescriptor: BackendJobDescriptor,
     val inputs = jobDescriptor.inputDeclarations.collect {
       case (key, WdlSingleFile(value)) if AwsFile.isS3File(value) =>
         // Any input file that looks like an S3 file must be a workflow input.
-        key -> WdlSingleFile(workflowInputs.resolve(AwsFile(value).toLocalPath).toString)
+        key -> WdlSingleFile(workflowInputs.resolve(AwsFile(value).toLocalPath).pathAsString)
       case kv => kv
     }
 
     log.info(s"inputs: {}", inputs)
     val docker = jobDescriptor.runtimeAttributes("docker").valueString
 
-    val functions = AwsStandardLibraryFunctions(jobDescriptor, awsAttributes)
-    val callDir = functions.callRootPath
+    def functions: AwsExpressionFunctions = ???
+    val callDir = functions.callContext.root
 
     val task = jobDescriptor.call.task
     val userCommand = task.instantiateCommand(inputs, functions).get
@@ -56,7 +55,8 @@ class AwsJobExecutionActor(override val jobDescriptor: BackendJobDescriptor,
     def postMapper(wdlValue: WdlValue): Try[WdlValue] = Try {
       val mapped = wdlValue match {
         case WdlSingleFile(value) if AwsFile.isS3File(value) => WdlSingleFile(workflowInputs.resolve(AwsFile(value).toLocalPath).toString)
-        case WdlSingleFile(value) if !Paths.get(value).isAbsolute => WdlFile(callDir.resolve(value).toString)
+        case WdlSingleFile(value) if !DefaultPathBuilder.get(value).isAbsolute =>
+          WdlFile(callDir.resolve(value).toString)
         case x => x
       }
       mapped

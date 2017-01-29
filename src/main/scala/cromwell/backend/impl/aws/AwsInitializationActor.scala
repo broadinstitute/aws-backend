@@ -1,26 +1,33 @@
 package cromwell.backend.impl.aws
 
-import java.nio.file.Paths
-
-import akka.actor.{ActorRef, Props}
-import cromwell.backend.{BackendConfigurationDescriptor, BackendInitializationData, BackendWorkflowDescriptor, BackendWorkflowInitializationActor}
-import cromwell.core.WorkflowOptions
-import wdl4s.TaskCall
-import wdl4s.values.{WdlSingleFile, WdlValue}
+import com.typesafe.config.Config
+import cromwell.backend.io.{JobPaths, WorkflowPaths}
+import cromwell.backend.standard.{StandardInitializationActor, StandardInitializationActorParams, StandardInitializationData, StandardValidatedRuntimeAttributesBuilder}
+import cromwell.backend.validation.DockerValidation
+import cromwell.backend.{BackendInitializationData, BackendJobDescriptorKey, BackendWorkflowDescriptor}
+import cromwell.core.JobKey
+import cromwell.core.path.{DefaultPathBuilder, Path, PathBuilder}
+import wdl4s.values.WdlSingleFile
 
 import scala.concurrent.Future
 import scala.language.postfixOps
-import scala.util.{Success, Try}
+import scala.util.Try
 
+case class AwsBackendInitializationData
+(
+  override val workflowPaths: WorkflowPaths,
+  override val runtimeAttributesBuilder: StandardValidatedRuntimeAttributesBuilder,
+  awsConfiguration: AwsConfiguration
+) extends StandardInitializationData(workflowPaths, runtimeAttributesBuilder, classOf[AwsExpressionFunctions])
 
-class AwsInitializationActor(override val workflowDescriptor: BackendWorkflowDescriptor,
-                             override val calls: Set[TaskCall],
-                             override val serviceRegistryActor: ActorRef,
-                             val awsConfiguration: AwsConfiguration) extends BackendWorkflowInitializationActor with AwsTaskRunner {
+class AwsInitializationActor(standardParams: StandardInitializationActorParams)
+  extends StandardInitializationActor(standardParams) with AwsTaskRunner {
 
-  override protected def runtimeAttributeValidators: Map[String, (Option[WdlValue]) => Boolean] = Map.empty // Might be more rigorous
+  override val awsConfiguration = AwsConfiguration(configurationDescriptor)
 
-  override protected def coerceDefaultRuntimeAttributes(options: WorkflowOptions): Try[Map[String, WdlValue]] = Success(Map.empty)
+  override def runtimeAttributesBuilder: StandardValidatedRuntimeAttributesBuilder = {
+    super.runtimeAttributesBuilder.withValidation(DockerValidation.instance)
+  }
 
   /** Copy inputs down from their S3 locations to the workflow inputs directory on the pre-mounted EFS volume. */
   override def beforeAll(): Future[Option[BackendInitializationData]] = {
@@ -28,7 +35,8 @@ class AwsInitializationActor(override val workflowDescriptor: BackendWorkflowDes
     Future.fromTry(Try {
       val awsAttributes = awsConfiguration.awsAttributes
 
-      val workflowDirectory = Paths.get(awsAttributes.containerMountPoint).resolve(workflowDescriptor.id.id.toString)
+      val workflowDirectory =
+        DefaultPathBuilder.get(awsAttributes.containerMountPoint).resolve(workflowDescriptor.id.id.toString)
       val workflowInputsDirectory = workflowDirectory.resolve("workflow-inputs")
 
       val prepareWorkflowInputDirectory = List(
@@ -38,10 +46,10 @@ class AwsInitializationActor(override val workflowDescriptor: BackendWorkflowDes
         s"cd $workflowInputsDirectory")
 
       // Workflow inputs have to be S3 cp'd onesie twosie
-      val localizeWorkflowInputs = workflowDescriptor.inputs.values.collect {
+      val localizeWorkflowInputs = workflowDescriptor.knownValues.values.collect {
         case WdlSingleFile(value) =>
           val awsFile = AwsFile(value)
-          val parentDirectory = awsFile.toLocalPath.getParent
+          val parentDirectory = awsFile.toLocalPath.parent
           List(
             s"mkdir -m 777 -p $parentDirectory",
             s"(cd $parentDirectory && /usr/bin/aws s3 cp $value .)"
@@ -51,22 +59,50 @@ class AwsInitializationActor(override val workflowDescriptor: BackendWorkflowDes
       log.info("initialization commands: {}", commands)
 
       runTask(commands, AwsBackendActorFactory.AwsCliImage, awsAttributes)
-      None
+      Option(AwsBackendInitializationData(workflowPaths, runtimeAttributesBuilder, awsConfiguration))
     })
+  }
+
+  override lazy val workflowPaths: WorkflowPaths = {
+    new WorkflowPaths {
+      outer =>
+      override lazy val workflowDescriptor: BackendWorkflowDescriptor = standardParams.workflowDescriptor
+      override lazy val config: Config = standardParams.configurationDescriptor.backendConfig
+      override lazy val pathBuilders: List[PathBuilder] = WorkflowPaths.DefaultPathBuilders
+
+      // TODO: GLOB: Can we use the standard workflow root?
+      override lazy val workflowRoot: Path =
+        DefaultPathBuilder.get(awsAttributes.containerMountPoint).resolve(workflowDescriptor.id.id.toString)
+
+      override def toJobPaths(backendJobDescriptorKey: BackendJobDescriptorKey,
+                              jobWorkflowDescriptor: BackendWorkflowDescriptor): JobPaths = {
+        new JobPaths with WorkflowPaths {
+
+          // TODO: GLOB: Can we use the standard workflow and call root?
+          override lazy val workflowRoot: Path =
+            DefaultPathBuilder.get(awsAttributes.containerMountPoint).resolve(jobWorkflowDescriptor.id.id.toString)
+          private lazy val sanitizedJobKey = AwsExpressionFunctions.sanitizedJobKey(backendJobDescriptorKey)
+          override lazy val callRoot: Path = workflowRoot.resolve(sanitizedJobKey)
+
+          override lazy val returnCodeFilename: String = "detritus/rc.txt"
+          override lazy val stdoutFilename: String = "detritus/stdout.txt"
+          override lazy val stderrFilename: String = "detritus/stderr.txt"
+          override lazy val scriptFilename: String = "detritus/command.sh"
+          override lazy val jobKey: JobKey = backendJobDescriptorKey
+          override lazy val workflowDescriptor: BackendWorkflowDescriptor = jobWorkflowDescriptor
+          override lazy val config: Config = outer.config
+          override lazy val pathBuilders: List[PathBuilder] = outer.pathBuilders
+
+          override def toJobPaths(jobKey: BackendJobDescriptorKey,
+                                  jobWorkflowDescriptor: BackendWorkflowDescriptor): JobPaths =
+            outer.toJobPaths(jobKey, jobWorkflowDescriptor)
+        }
+      }
+    }
   }
 
   /**
     * Validate that this WorkflowBackendActor can run all of the calls that it's been assigned
     */
   override def validate(): Future[Unit] = Future.successful(()) // Everything is awesome, always.  Hardcode that accordingly.
-
-  /**
-    * The configuration for the backend, in the context of the entire Cromwell configuration file.
-    */
-  override protected def configurationDescriptor: BackendConfigurationDescriptor = awsConfiguration.configurationDescriptor
-}
-
-object AwsInitializationActor {
-  def props(workflowDescriptor: BackendWorkflowDescriptor, calls: Set[TaskCall], serviceRegistryActor: ActorRef, awsConfiguration: AwsConfiguration): Props =
-    Props(new AwsInitializationActor(workflowDescriptor, calls, serviceRegistryActor, awsConfiguration))
 }

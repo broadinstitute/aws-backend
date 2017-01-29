@@ -6,7 +6,8 @@ version := "1.0"
 
 scalaVersion := "2.11.8"
 
-lazy val betterFilesV = "2.16.0"
+val cromwellV = "25-f141ad1-SNAP"
+val betterFilesV = "2.16.0"
 
 val compilerSettings = List(
   "-Xlint",
@@ -39,7 +40,7 @@ resolvers ++= Seq(
 // logBuffered in Test := false
 
 libraryDependencies ++= Seq(
-  "org.broadinstitute" %% "cromwell-backend" % "23" % Provided,
+  "org.broadinstitute" %% "cromwell-backend" % cromwellV % Provided,
   "com.github.pathikrit" %% "better-files" % betterFilesV,
   "com.amazonaws" % "aws-java-sdk" % "1.11.41",
   "com.github.kxbmap" %% "configs" % "0.4.2",
