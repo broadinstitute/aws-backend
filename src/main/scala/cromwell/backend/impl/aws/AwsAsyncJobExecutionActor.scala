@@ -8,7 +8,7 @@ import cromwell.backend.async.{ExecutionHandle, FailedNonRetryableExecutionHandl
 import cromwell.backend.standard.{StandardAsyncExecutionActor, StandardAsyncExecutionActorParams, StandardAsyncJob}
 import cromwell.backend.validation.{DockerValidation, RuntimeAttributesValidation}
 import cromwell.backend.{BackendInitializationData, BackendJobLifecycleActor}
-import cromwell.core.path.{DefaultPathBuilder, Path, PathFactory}
+import cromwell.core.path.{MappedPath, Path, PathFactory}
 import cromwell.core.retry.SimpleExponentialBackoff
 import cromwell.core.{CromwellFatalException, ExecutionEvent}
 import wdl4s.values.{WdlFile, WdlSingleFile}
@@ -23,12 +23,6 @@ case class AwsRunStatus(task: Task) {
 class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecutionActorParams)
   extends BackendJobLifecycleActor with StandardAsyncExecutionActor with AwsTaskRunner {
 
-  lazy val awsBackendInitializationData: AwsBackendInitializationData = {
-    BackendInitializationData.as[AwsBackendInitializationData](standardParams.backendInitializationDataOption)
-  }
-
-  override lazy val awsConfiguration: AwsConfiguration = awsBackendInitializationData.awsConfiguration
-
   override type StandardAsyncRunInfo = Any
   override type StandardAsyncRunStatus = AwsRunStatus
 
@@ -38,10 +32,11 @@ class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecut
   override lazy val pollBackOff = SimpleExponentialBackoff(
     initialInterval = 30.seconds, maxInterval = 600.seconds, multiplier = 1.1)
 
-  private lazy val workflowDirectory = DefaultPathBuilder.get(awsConfiguration.awsAttributes.containerMountPoint)
-    .resolve(jobDescriptor.workflowDescriptor.id.id.toString)
+  lazy val awsBackendInitializationData: AwsBackendInitializationData = {
+    BackendInitializationData.as[AwsBackendInitializationData](standardParams.backendInitializationDataOption)
+  }
 
-  private lazy val workflowInputs = workflowDirectory.resolve("workflow-inputs")
+  override lazy val awsConfiguration: AwsConfiguration = awsBackendInitializationData.awsConfiguration
 
   override def execute(): ExecutionHandle = {
     val scriptFile = jobPaths.script
@@ -78,33 +73,23 @@ class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecut
   override def isSuccess(runStatus: AwsRunStatus): Boolean = isSuccess(runStatus.task)
 
   override def mapCommandLineWdlFile(wdlFile: WdlFile): WdlFile = {
-    wdlFile match {
-      case WdlSingleFile(value) if AwsFile.isS3File(value) =>
-        // Any input file that looks like an S3 file must be a workflow input.
-        // TODO: GLOB: .toString or .toRealString?
-        WdlSingleFile(workflowInputs.resolve(AwsFile(value).toLocalPath).toString)
-      case _ =>
-        // TODO: GLOB: Slightly better understanding. The file path for the command line is _always_ .toString.
-        // This method should not return a URI, as you can't for ex: cat file:///path/to/file, only cat /path/to/file
-        WdlSingleFile(workflowPaths.buildPath(wdlFile.value).toString)
-    }
+    val path = PathFactory.buildPath(wdlFile.value, workflowPaths.pathBuilders)
+    WdlSingleFile(path.pathAsString)
   }
 
-  // TODO: GLOB: JobPaths should _really_ differentiate java.nio.Paths between in and out of container, aka on and off host
-  private def hostAbsoluteFilePath(pathString: String): Path = {
-    val wdlPath = PathFactory.buildPath(pathString, workflowPaths.pathBuilders)
+  private def hostAbsoluteFilePath(wdlPath: Path): Path = {
     jobPaths.callExecutionRoot.resolve(wdlPath).toAbsolutePath
   }
 
   override def mapOutputWdlFile(wdlFile: WdlFile): WdlFile = {
-    wdlFile match {
-      // TODO: GLOB: .toString or .toRealString for all of these?
-      case WdlSingleFile(value) if AwsFile.isS3File(value) =>
-        WdlSingleFile(workflowInputs.resolve(AwsFile(value).toLocalPath).pathAsString)
-      case fileNotFound: WdlFile if !hostAbsoluteFilePath(fileNotFound.valueString).exists =>
-        throw new RuntimeException("Could not process output, file not found: " +
-          s"${hostAbsoluteFilePath(fileNotFound.valueString).pathAsString}")
-      case _ => WdlFile(hostAbsoluteFilePath(wdlFile.valueString).pathAsString)
+    val outputPath = PathFactory.buildPath(wdlFile.value, workflowPaths.pathBuilders)
+    outputPath match {
+      case path: MappedPath =>
+        // This was a pass through, for example: output { File outFile = inFile }
+        WdlSingleFile(path.pathAsString)
+      case path if !hostAbsoluteFilePath(path).exists =>
+        throw new RuntimeException(s"Could not process output, file not found: ${hostAbsoluteFilePath(path)}")
+      case path => WdlFile(hostAbsoluteFilePath(path).pathAsString)
     }
   }
 

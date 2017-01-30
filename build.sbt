@@ -6,7 +6,7 @@ version := "1.0"
 
 scalaVersion := "2.11.8"
 
-val cromwellV = "25-f141ad1-SNAP"
+val cromwellV = "25-9341a4d-SNAP"
 val betterFilesV = "2.16.0"
 
 val compilerSettings = List(

@@ -6,9 +6,10 @@ import cromwell.backend.standard.{StandardInitializationActor, StandardInitializ
 import cromwell.backend.validation.DockerValidation
 import cromwell.backend.{BackendInitializationData, BackendJobDescriptorKey, BackendWorkflowDescriptor}
 import cromwell.core.JobKey
-import cromwell.core.path.{DefaultPathBuilder, Path, PathBuilder}
+import cromwell.core.path._
 import wdl4s.values.WdlSingleFile
 
+import scala.collection.immutable.Seq
 import scala.concurrent.Future
 import scala.language.postfixOps
 import scala.util.Try
@@ -22,6 +23,7 @@ case class AwsBackendInitializationData
 
 class AwsInitializationActor(standardParams: StandardInitializationActorParams)
   extends StandardInitializationActor(standardParams) with AwsTaskRunner {
+  awsInitializationActor =>
 
   override val awsConfiguration = AwsConfiguration(configurationDescriptor)
 
@@ -29,73 +31,79 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
     super.runtimeAttributesBuilder.withValidation(DockerValidation.instance)
   }
 
+  lazy val workflowRootDirectory: Path = DefaultPathBuilder
+    .get(awsAttributes.containerMountPoint)
+    .resolve(workflowDescriptor.rootWorkflowId.toString)
+
+  lazy val workflowInputsDirectory: Path = workflowRootDirectory.resolve("workflow-inputs")
+
+  lazy val workflowInputsPathBuilder: PathBuilder = new MappedPathBuilder("s3://", workflowRootDirectory.pathAsString)
+
+  override lazy val pathBuilders: List[PathBuilder] = List(workflowInputsPathBuilder, DefaultPathBuilder)
+
+  override lazy val initializationData: StandardInitializationData =
+    AwsBackendInitializationData(workflowPaths, runtimeAttributesBuilder, awsConfiguration)
+
   /** Copy inputs down from their S3 locations to the workflow inputs directory on the pre-mounted EFS volume. */
   override def beforeAll(): Future[Option[BackendInitializationData]] = {
 
     Future.fromTry(Try {
       val awsAttributes = awsConfiguration.awsAttributes
 
-      val workflowDirectory =
-        DefaultPathBuilder.get(awsAttributes.containerMountPoint).resolve(workflowDescriptor.id.id.toString)
-      val workflowInputsDirectory = workflowDirectory.resolve("workflow-inputs")
-
       val prepareWorkflowInputDirectory = List(
         s"cd ${awsAttributes.containerMountPoint}",
         s"mkdir -m 777 -p $workflowInputsDirectory",
-        s"chmod 777 $workflowDirectory",
+        s"chmod 777 $workflowRootDirectory",
         s"cd $workflowInputsDirectory")
 
       // Workflow inputs have to be S3 cp'd onesie twosie
-      val localizeWorkflowInputs = workflowDescriptor.knownValues.values.collect {
-        case WdlSingleFile(value) =>
-          val awsFile = AwsFile(value)
-          val parentDirectory = awsFile.toLocalPath.parent
+      val localizeWorkflowInputs: Seq[String] = workflowDescriptor.knownValues.values collect {
+        case WdlSingleFile(value) => PathFactory.buildPath(value, pathBuilders)
+      } collect {
+        case path: MappedPath =>
+          val parentDirectory = path.parent
           List(
             s"mkdir -m 777 -p $parentDirectory",
-            s"(cd $parentDirectory && /usr/bin/aws s3 cp $value .)"
+            s"(cd $parentDirectory && /usr/bin/aws s3 cp ${path.prefixedPathAsString} .)"
           ).mkString(" && ")
       } toList
       val commands = (prepareWorkflowInputDirectory ++ localizeWorkflowInputs).mkString(" && ")
       log.info("initialization commands: {}", commands)
 
       runTask(commands, AwsBackendActorFactory.AwsCliImage, awsAttributes)
-      Option(AwsBackendInitializationData(workflowPaths, runtimeAttributesBuilder, awsConfiguration))
+      Option(initializationData)
     })
   }
 
   override lazy val workflowPaths: WorkflowPaths = {
     new WorkflowPaths {
-      outer =>
+      workflowPaths =>
       override lazy val workflowDescriptor: BackendWorkflowDescriptor = standardParams.workflowDescriptor
       override lazy val config: Config = standardParams.configurationDescriptor.backendConfig
-      override lazy val pathBuilders: List[PathBuilder] = WorkflowPaths.DefaultPathBuilders
+      override lazy val pathBuilders: List[PathBuilder] = awsInitializationActor.pathBuilders
 
-      // TODO: GLOB: Can we use the standard workflow root?
-      override lazy val workflowRoot: Path =
-        DefaultPathBuilder.get(awsAttributes.containerMountPoint).resolve(workflowDescriptor.id.id.toString)
+      // TODO: Switch AwsAttributes.root's name and config key. Then this override is no longer needed.
+      override lazy val executionRootString: String = workflowRootDirectory.resolve("cromwell-executions").pathAsString
 
       override def toJobPaths(backendJobDescriptorKey: BackendJobDescriptorKey,
                               jobWorkflowDescriptor: BackendWorkflowDescriptor): JobPaths = {
         new JobPaths with WorkflowPaths {
 
-          // TODO: GLOB: Can we use the standard workflow and call root?
-          override lazy val workflowRoot: Path =
-            DefaultPathBuilder.get(awsAttributes.containerMountPoint).resolve(jobWorkflowDescriptor.id.id.toString)
+          override lazy val workflowDescriptor: BackendWorkflowDescriptor = jobWorkflowDescriptor
+          override lazy val config: Config = workflowPaths.config
+          override lazy val pathBuilders: List[PathBuilder] = workflowPaths.pathBuilders
+
+          // TODO: Switch AwsAttributes.root's name and config key. Then this override is no longer needed.
+          override lazy val executionRootString: String = workflowPaths.executionRootString
+
           private lazy val sanitizedJobKey = AwsExpressionFunctions.sanitizedJobKey(backendJobDescriptorKey)
           override lazy val callRoot: Path = workflowRoot.resolve(sanitizedJobKey)
 
-          override lazy val returnCodeFilename: String = "detritus/rc.txt"
-          override lazy val stdoutFilename: String = "detritus/stdout.txt"
-          override lazy val stderrFilename: String = "detritus/stderr.txt"
-          override lazy val scriptFilename: String = "detritus/command.sh"
           override lazy val jobKey: JobKey = backendJobDescriptorKey
-          override lazy val workflowDescriptor: BackendWorkflowDescriptor = jobWorkflowDescriptor
-          override lazy val config: Config = outer.config
-          override lazy val pathBuilders: List[PathBuilder] = outer.pathBuilders
 
-          override def toJobPaths(jobKey: BackendJobDescriptorKey,
+          override def toJobPaths(backendJobDescriptorKey: BackendJobDescriptorKey,
                                   jobWorkflowDescriptor: BackendWorkflowDescriptor): JobPaths =
-            outer.toJobPaths(jobKey, jobWorkflowDescriptor)
+            workflowPaths.toJobPaths(backendJobDescriptorKey, jobWorkflowDescriptor)
         }
       }
     }
