@@ -7,7 +7,7 @@ import cromwell.backend.validation.DockerValidation
 import cromwell.backend.{BackendInitializationData, BackendJobDescriptorKey, BackendWorkflowDescriptor}
 import cromwell.core.JobKey
 import cromwell.core.path._
-import wdl4s.values.WdlSingleFile
+import wdl4s.values.{WdlArray, WdlSingleFile, WdlValue}
 
 import scala.collection.immutable.Seq
 import scala.concurrent.Future
@@ -47,6 +47,12 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
   /** Copy inputs down from their S3 locations to the workflow inputs directory on the pre-mounted EFS volume. */
   override def beforeAll(): Future[Option[BackendInitializationData]] = {
 
+    def pathsFromWdlValue(wdlValue: WdlValue): Seq[Path] = wdlValue match {
+      case WdlSingleFile(value) => Seq(PathFactory.buildPath(value, pathBuilders))
+      case a: WdlArray => a.value.toList flatMap pathsFromWdlValue
+      case _ => Seq.empty
+    }
+
     Future.fromTry(Try {
       val awsAttributes = awsConfiguration.awsAttributes
 
@@ -57,9 +63,8 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
         s"cd $workflowInputsDirectory")
 
       // Workflow inputs have to be S3 cp'd onesie twosie
-      val localizeWorkflowInputs: Seq[String] = workflowDescriptor.knownValues.values collect {
-        case WdlSingleFile(value) => PathFactory.buildPath(value, pathBuilders)
-      } collect {
+      val paths = workflowDescriptor.knownValues.values flatMap pathsFromWdlValue
+      val localizeWorkflowInputs: Seq[String] = paths collect {
         case path: MappedPath =>
           val parentDirectory = path.parent
           List(
