@@ -6,11 +6,12 @@ import java.util.Date
 import com.amazonaws.services.ecs.model.{DescribeTasksRequest, Task}
 import cromwell.backend.async.{ExecutionHandle, FailedNonRetryableExecutionHandle, PendingExecutionHandle}
 import cromwell.backend.standard.{StandardAsyncExecutionActor, StandardAsyncExecutionActorParams, StandardAsyncJob}
-import cromwell.backend.validation.{DockerValidation, RuntimeAttributesValidation}
-import cromwell.backend.{BackendInitializationData, BackendJobLifecycleActor}
+import cromwell.backend.validation.{CpuValidation, DockerValidation, MemoryValidation, RuntimeAttributesValidation}
+import cromwell.backend.{BackendInitializationData, BackendJobLifecycleActor, MemorySize}
 import cromwell.core.path.{MappedPath, Path, PathFactory}
 import cromwell.core.retry.SimpleExponentialBackoff
 import cromwell.core.ExecutionEvent
+import wdl4s.parser.MemoryUnit
 import wdl4s.values.{WdlFile, WdlSingleFile}
 
 import scala.collection.JavaConverters._
@@ -38,6 +39,10 @@ class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecut
 
   override lazy val awsConfiguration: AwsConfiguration = awsBackendInitializationData.awsConfiguration
 
+  private val memoryValidation = MemoryValidation.instance
+
+  private val cpuValidation = CpuValidation.instance
+
   override def execute(): ExecutionHandle = {
     val scriptFile = jobPaths.script
     scriptFile.parent.createDirectories().chmod("rwxrwxrwx")
@@ -45,7 +50,9 @@ class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecut
 
     val cromwellCommand = redirectOutputs(s"/bin/bash ${jobPaths.script}")
     val docker = RuntimeAttributesValidation.extract(DockerValidation.instance, validatedRuntimeAttributes)
-    val runTaskResult = runTaskAsync(cromwellCommand, docker, awsConfiguration.awsAttributes)
+    val memory = RuntimeAttributesValidation.extractOption(memoryValidation, validatedRuntimeAttributes).getOrElse(MemorySize(4, MemoryUnit.GiB))
+    val cpu = RuntimeAttributesValidation.extractOption(cpuValidation, validatedRuntimeAttributes).getOrElse(1)
+    val runTaskResult = runTaskAsync(cromwellCommand, docker, memory, cpu, awsConfiguration.awsAttributes)
 
     log.info("AWS submission completed:\n{}", runTaskResult)
     val taskArn = runTaskResult.getTasks.asScala.head.getTaskArn

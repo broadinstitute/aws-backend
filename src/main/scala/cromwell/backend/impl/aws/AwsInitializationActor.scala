@@ -4,9 +4,10 @@ import com.typesafe.config.Config
 import cromwell.backend.io.{JobPaths, WorkflowPaths}
 import cromwell.backend.standard.{StandardInitializationActor, StandardInitializationActorParams, StandardInitializationData, StandardValidatedRuntimeAttributesBuilder}
 import cromwell.backend.validation.DockerValidation
-import cromwell.backend.{BackendInitializationData, BackendJobDescriptorKey, BackendWorkflowDescriptor}
+import cromwell.backend.{BackendInitializationData, BackendJobDescriptorKey, BackendWorkflowDescriptor, MemorySize}
 import cromwell.core.JobKey
 import cromwell.core.path._
+import wdl4s.parser.MemoryUnit
 import wdl4s.values.{WdlArray, WdlSingleFile, WdlValue}
 
 import scala.collection.immutable.Seq
@@ -75,7 +76,7 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
       val localizationScript = workflowInputsDirectory.createTempFile("localization", ".sh").chmod(allPermissions)
       localizationScript.write(commands)
 
-      runTask(s"sh ${localizationScript.pathWithoutScheme}", AwsBackendActorFactory.AwsCliImage, awsAttributes)
+      runTask(s"sh ${localizationScript.pathWithoutScheme}", AwsBackendActorFactory.AwsCliImage, MemorySize(4096, MemoryUnit.MiB), 1, awsAttributes)
       Option(initializationData)
     })
   }

@@ -6,7 +6,9 @@ import com.amazonaws.auth.{AWSCredentials, AWSCredentialsProvider}
 import com.amazonaws.retry.RetryPolicy
 import com.amazonaws.services.ecs.AmazonECSAsyncClient
 import com.amazonaws.services.ecs.model._
+import cromwell.backend.MemorySize
 import cromwell.backend.impl.aws.util.AwsSdkAsyncHandler
+import wdl4s.parser.MemoryUnit
 
 import scala.collection.JavaConverters._
 import scala.concurrent.Await
@@ -16,17 +18,20 @@ import scala.concurrent.duration.Duration
 trait AwsTaskRunner {
   self: ActorLogging with Actor =>
 
-  var imageToTaskDefinition: Map[String, TaskDefinition] = Map.empty
+  var cacheKeyToTaskDefinition: Map[String, TaskDefinition] = Map.empty
 
   val containerName = "cromwell-container-name"
 
-  private def getOrCreateTaskDefinition(image: String): TaskDefinition = {
-    if (!imageToTaskDefinition.contains(image)) {
-      // DANGER total hack.  This calls into question the whole AWS backend approach.
-      // It also completely punts on handling memory or CPU resources and task definitions
-      // are no longer being cleaned up.
-      image.intern.synchronized {
-        if (!imageToTaskDefinition.contains(image)) {
+  private def getOrCreateTaskDefinition(image: String, memorySize: MemorySize, cpu: Int): TaskDefinition = {
+    val cacheKey = s"$image $memorySize $cpu"
+
+    if (!cacheKeyToTaskDefinition.contains(cacheKey)) {
+      // DANGER total hack.  Squirrels away a TaskDefinition for a Docker image name + memory size + cpu triplet.
+      // Task definitions are never cleaned up.
+
+      cacheKey.intern.synchronized {
+        if (!cacheKeyToTaskDefinition.contains(cacheKey)) {
+          log.info(s"Cache miss for $cacheKey, creating new task definition.")
           val volumeProperties = new HostVolumeProperties().withSourcePath(awsAttributes.hostMountPoint)
           val cromwellVolume = "cromwell-volume"
           val volume = new Volume().withHost(volumeProperties).withName(cromwellVolume)
@@ -39,7 +44,8 @@ trait AwsTaskRunner {
             .withName(containerName)
             .withCommand("/bin/sh", "-xv", "-c", "echo Default command")
             .withImage(image)
-            .withMemory(awsAttributes.containerMemoryMib)
+            .withMemory(memorySize.to(MemoryUnit.MiB).amount.toInt)
+            .withCpu(cpu)
             .withMountPoints(mountPoint)
             .withEnvironment(accessKey, secretAccessKey)
             .withEssential(true)
@@ -50,15 +56,15 @@ trait AwsTaskRunner {
             .withVolumes(volume)
 
           val taskDefinition = ecsAsyncClient.registerTaskDefinition(registerTaskDefinitionRequest).getTaskDefinition
-          imageToTaskDefinition += image -> taskDefinition
+          cacheKeyToTaskDefinition += cacheKey -> taskDefinition
         }
       }
     }
-    imageToTaskDefinition(image)
+    cacheKeyToTaskDefinition(cacheKey)
   }
 
-  def runTaskAsync(command: String, dockerImage: String, awsAttributes: AwsAttributes): RunTaskResult = {
-    val taskDefinition = getOrCreateTaskDefinition(dockerImage)
+  def runTaskAsync(command: String, dockerImage: String, memorySize: MemorySize, cpu: Int, awsAttributes: AwsAttributes): RunTaskResult = {
+    val taskDefinition = getOrCreateTaskDefinition(dockerImage, memorySize, cpu)
 
     val commandOverride = new ContainerOverride()
       .withCommand("/bin/sh", "-c", command)
@@ -76,8 +82,8 @@ trait AwsTaskRunner {
     taskResult
   }
 
-  def runTask(command: String, dockerImage: String, awsAttributes: AwsAttributes): Task = {
-    val taskResult = runTaskAsync(command, dockerImage, awsAttributes)
+  def runTask(command: String, dockerImage: String, memorySize: MemorySize, cpu: Int, awsAttributes: AwsAttributes): Task = {
+    val taskResult = runTaskAsync(command, dockerImage, memorySize, cpu, awsAttributes)
     // Error checking needed here, if something is wrong getTasks will be empty.
     waitUntilDone(taskResult.getTasks.asScala.head)
   }
