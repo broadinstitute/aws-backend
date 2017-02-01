@@ -39,9 +39,9 @@ class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecut
 
   override lazy val awsConfiguration: AwsConfiguration = awsBackendInitializationData.awsConfiguration
 
-  private val memoryValidation = MemoryValidation.instance
+  private val memoryValidation = MemoryValidation.optional
 
-  private val cpuValidation = CpuValidation.instance
+  private val cpuValidation = CpuValidation.optional
 
   override def execute(): ExecutionHandle = {
     val scriptFile = jobPaths.script
@@ -50,8 +50,8 @@ class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecut
 
     val cromwellCommand = redirectOutputs(s"/bin/bash ${jobPaths.script}")
     val docker = RuntimeAttributesValidation.extract(DockerValidation.instance, validatedRuntimeAttributes)
-    val memory = RuntimeAttributesValidation.extractOption(memoryValidation, validatedRuntimeAttributes).getOrElse(MemorySize(4, MemoryUnit.GiB))
-    val cpu = RuntimeAttributesValidation.extractOption(cpuValidation, validatedRuntimeAttributes).getOrElse(1)
+    val memory = RuntimeAttributesValidation.extract(memoryValidation, validatedRuntimeAttributes).getOrElse(MemorySize(4, MemoryUnit.GiB))
+    val cpu = RuntimeAttributesValidation.extract(cpuValidation, validatedRuntimeAttributes).getOrElse(1)
     val runTaskResult = runTaskAsync(cromwellCommand, docker, memory, cpu, awsConfiguration.awsAttributes)
 
     log.info("AWS submission completed:\n{}", runTaskResult)
