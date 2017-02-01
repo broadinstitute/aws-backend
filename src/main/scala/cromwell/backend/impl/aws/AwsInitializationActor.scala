@@ -56,12 +56,6 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
     Future.fromTry(Try {
       val awsAttributes = awsConfiguration.awsAttributes
 
-      val prepareWorkflowInputDirectory = List(
-        s"cd ${awsAttributes.containerMountPoint}",
-        s"mkdir -m 777 -p $workflowInputsDirectory",
-        s"chmod 777 $workflowRootDirectory",
-        s"cd $workflowInputsDirectory")
-
       // Workflow inputs have to be S3 cp'd onesie twosie
       val paths = workflowDescriptor.knownValues.values flatMap pathsFromWdlValue
       val localizeWorkflowInputs: Seq[String] = paths collect {
@@ -70,12 +64,18 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
           List(
             s"mkdir -m 777 -p $parentDirectory",
             s"(cd $parentDirectory && /usr/bin/aws s3 cp ${path.prefixedPathAsString} .)"
-          ).mkString(" && ")
+          ).mkString(" && \\\n    ")
       } toList
-      val commands = (prepareWorkflowInputDirectory ++ localizeWorkflowInputs).mkString(" && ")
+      val commands = localizeWorkflowInputs.mkString(" && \\\n")
       log.info("initialization commands: {}", commands)
 
-      runTask(commands, AwsBackendActorFactory.AwsCliImage, awsAttributes)
+      val allPermissions = "rwxrwxrwx"
+      workflowRootDirectory.createDirectories().chmod(allPermissions)
+      workflowInputsDirectory.createDirectories().chmod(allPermissions)
+      val localizationScript = workflowInputsDirectory.createTempFile("localization", ".sh").chmod(allPermissions)
+      localizationScript.write(commands)
+
+      runTask(s"sh ${localizationScript.pathWithoutScheme}", AwsBackendActorFactory.AwsCliImage, awsAttributes)
       Option(initializationData)
     })
   }
