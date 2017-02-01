@@ -3,7 +3,7 @@ package cromwell.backend.impl.aws
 import com.typesafe.config.Config
 import cromwell.backend.io.{JobPaths, WorkflowPaths}
 import cromwell.backend.standard.{StandardInitializationActor, StandardInitializationActorParams, StandardInitializationData, StandardValidatedRuntimeAttributesBuilder}
-import cromwell.backend.validation.DockerValidation
+import cromwell.backend.validation.{CpuValidation, DockerValidation, MemoryValidation}
 import cromwell.backend.{BackendInitializationData, BackendJobDescriptorKey, BackendWorkflowDescriptor, MemorySize}
 import cromwell.core.JobKey
 import cromwell.core.path._
@@ -29,7 +29,11 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
   override val awsConfiguration = AwsConfiguration(configurationDescriptor)
 
   override def runtimeAttributesBuilder: StandardValidatedRuntimeAttributesBuilder = {
-    super.runtimeAttributesBuilder.withValidation(DockerValidation.instance)
+    super.runtimeAttributesBuilder.withValidation(
+      DockerValidation.instance,
+      MemoryValidation.withDefaultMemory(MemorySize(4, MemoryUnit.GiB)),
+      CpuValidation.default
+    )
   }
 
   lazy val workflowRootDirectory: Path = DefaultPathBuilder
