@@ -4,6 +4,7 @@ import cromwell.backend._
 import cromwell.backend.standard.{StandardFinalizationActor, StandardFinalizationActorParams}
 import cromwell.core.JobOutput
 import cromwell.core.path.DefaultPathBuilder
+import wdl4s.parser.MemoryUnit
 import wdl4s.values.WdlSingleFile
 
 import scala.concurrent.Future
@@ -28,7 +29,7 @@ case class AwsFinalizationActor(override val standardParams: StandardFinalizatio
 
       log.info("finalization commands: {}", commands)
 
-      runTask(commands, AwsBackendActorFactory.AwsCliImage, awsConfiguration.awsAttributes)
+      runTask(commands, AwsBackendActorFactory.AwsCliImage, MemorySize(4096, MemoryUnit.MiB), 1, awsAttributes)
     }
     super.afterAll()
   }
