@@ -14,11 +14,15 @@ import scala.collection.JavaConverters._
 import scala.concurrent.Await
 import scala.concurrent.duration.Duration
 
+object AwsTaskRunner {
+  var cacheKeyToTaskDefinition: Map[String, TaskDefinition] = Map.empty
+}
+
 
 trait AwsTaskRunner {
   self: ActorLogging with Actor =>
 
-  var cacheKeyToTaskDefinition: Map[String, TaskDefinition] = Map.empty
+  import AwsTaskRunner._
 
   val containerName = "cromwell-container-name"
 
