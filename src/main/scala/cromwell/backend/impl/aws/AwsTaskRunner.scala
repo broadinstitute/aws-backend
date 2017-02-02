@@ -59,15 +59,26 @@ trait AwsTaskRunner {
             .withContainerDefinitions(containerDefinition)
             .withVolumes(volume)
 
-          val taskDefinition = ecsAsyncClient.registerTaskDefinition(registerTaskDefinitionRequest).getTaskDefinition
-          cacheKeyToTaskDefinition += cacheKey -> taskDefinition
+          def registerTaskDefinition(count: Int = 1): Unit = {
+            try {
+              val taskDefinition = ecsAsyncClient.registerTaskDefinition(registerTaskDefinitionRequest).getTaskDefinition
+              cacheKeyToTaskDefinition += cacheKey -> taskDefinition
+            } catch {
+              case e: ClientException if e.getMessage.contains("Too many concurrent attempts to create a new revision of the specified family.") =>
+                log.warning(s"Caught task definition throttling exception for $cacheKey on attempt $count, retrying")
+                Thread.sleep(1000)
+                registerTaskDefinition(count + 1)
+            }
+          }
+
+          registerTaskDefinition()
         }
       }
     }
     cacheKeyToTaskDefinition(cacheKey)
   }
 
-  def runTaskAsync(command: String, dockerImage: String, memorySize: MemorySize, cpu: Int, awsAttributes: AwsAttributes): RunTaskResult = {
+  def doRunTask(command: String, dockerImage: String, memorySize: MemorySize, cpu: Int, awsAttributes: AwsAttributes): RunTaskResult = {
     val taskDefinition = getOrCreateTaskDefinition(dockerImage, memorySize, cpu)
 
     val commandOverride = new ContainerOverride()
@@ -87,7 +98,7 @@ trait AwsTaskRunner {
   }
 
   def runTask(command: String, dockerImage: String, memorySize: MemorySize, cpu: Int, awsAttributes: AwsAttributes): Task = {
-    val taskResult = runTaskAsync(command, dockerImage, memorySize, cpu, awsAttributes)
+    val taskResult = doRunTask(command, dockerImage, memorySize, cpu, awsAttributes)
     // Error checking needed here, if something is wrong getTasks will be empty.
     waitUntilDone(taskResult.getTasks.asScala.head)
   }

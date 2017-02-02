@@ -47,7 +47,7 @@ class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecut
     val docker = RuntimeAttributesValidation.extract(DockerValidation.instance, validatedRuntimeAttributes)
     val memory = RuntimeAttributesValidation.extract(MemoryValidation.instance, validatedRuntimeAttributes)
     val cpu = RuntimeAttributesValidation.extract(CpuValidation.instance, validatedRuntimeAttributes)
-    val runTaskResult = runTaskAsync(cromwellCommand, docker, memory, cpu, awsConfiguration.awsAttributes)
+    val runTaskResult = doRunTask(cromwellCommand, docker, memory, cpu, awsConfiguration.awsAttributes)
 
     log.info("AWS submission completed:\n{}", runTaskResult)
     val taskArn = runTaskResult.getTasks.asScala.head.getTaskArn
