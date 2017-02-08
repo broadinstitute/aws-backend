@@ -1,40 +1,42 @@
 package cromwell.backend.impl.aws
 
-import akka.actor.{ActorRef, Props}
+import akka.event.LoggingAdapter
 import cromwell.backend._
-import cromwell.core.CallOutputs
+import cromwell.backend.callcaching.FileHashingActor.{FileHashingFunction, SingleFileHashRequest}
+import cromwell.backend.standard._
 import cromwell.core.JobExecutionToken.JobExecutionTokenType
 import net.ceedubs.ficus.Ficus._
-import wdl4s.TaskCall
-import wdl4s.expression.WdlStandardLibraryFunctions
 
+import scala.util.Try
 
 object AwsBackendActorFactory {
   val AwsCliImage = "garland/aws-cli-docker:latest"
+  val JobIdKey = "aws_task_arn"
+
+  // TODO: MD5 is computationally expensive. Make the SFS hashing options available to other backends?
+  private def md5HashingFunction(singleFileHashRequest: SingleFileHashRequest,
+                                 loggingAdapter: LoggingAdapter): Try[String] = {
+    val initializationData =
+      BackendInitializationData.as[StandardInitializationData](singleFileHashRequest.initializationData)
+    val pathTry = initializationData.workflowPaths.getPath(singleFileHashRequest.file.value)
+    pathTry map { _.md5 }
+  }
 }
 
-case class AwsBackendActorFactory(name: String, configurationDescriptor: BackendConfigurationDescriptor) extends BackendLifecycleActorFactory {
+case class AwsBackendActorFactory(name: String, configurationDescriptor: BackendConfigurationDescriptor)
+  extends StandardLifecycleActorFactory {
 
-  val awsConfiguration = AwsConfiguration(configurationDescriptor)
+  lazy val awsConfiguration = AwsConfiguration(configurationDescriptor)
 
-  override def workflowInitializationActorProps(workflowDescriptor: BackendWorkflowDescriptor,
-                                                calls: Set[TaskCall],
-                                                serviceRegistryActor: ActorRef): Option[Props] = {
-    Option(AwsInitializationActor.props(workflowDescriptor, calls, serviceRegistryActor, awsConfiguration))
-  }
+  override lazy val initializationActorClass: Class[_ <: StandardInitializationActor] = classOf[AwsInitializationActor]
 
-  override def jobExecutionActorProps(jobDescriptor: BackendJobDescriptor,
-                                      initializationData: Option[BackendInitializationData],
-                                      serviceRegistryActor: ActorRef,
-                                      backendSingletonActor: Option[ActorRef]): Props = AwsJobExecutionActor.props(jobDescriptor, configurationDescriptor, awsConfiguration)
+  override lazy val asyncExecutionActorClass: Class[_ <: StandardAsyncExecutionActor] =
+    classOf[AwsAsyncJobExecutionActor]
 
-  override def workflowFinalizationActorProps(workflowDescriptor: BackendWorkflowDescriptor,
-                                              calls: Set[TaskCall],
-                                              jobExecutionMap: JobExecutionMap,
-                                              workflowOutputs: CallOutputs,
-                                              initializationData: Option[BackendInitializationData]): Option[Props] = {
-    Option(AwsFinalizationActor.props(workflowDescriptor, calls, awsConfiguration, jobExecutionMap, workflowOutputs))
-  }
+  override lazy val finalizationActorClassOption: Option[Class[_ <: StandardFinalizationActor]] =
+    Option(classOf[AwsFinalizationActor])
+
+  override lazy val jobIdKey: String = AwsBackendActorFactory.JobIdKey
 
   override def jobExecutionTokenType: JobExecutionTokenType = {
     val concurrentJobLimit = configurationDescriptor.backendConfig.as[Option[Int]]("concurrent-job-limit").orElse(Option(10))
@@ -42,8 +44,6 @@ case class AwsBackendActorFactory(name: String, configurationDescriptor: Backend
     JobExecutionTokenType("AWS Backend", concurrentJobLimit)
   }
 
-  override def expressionLanguageFunctions(workflowDescriptor: BackendWorkflowDescriptor, jobKey: BackendJobDescriptorKey, initializationData: Option[BackendInitializationData]): WdlStandardLibraryFunctions = {
-    val jobDescriptor = BackendJobDescriptor(workflowDescriptor, jobKey, Map.empty, Map.empty)
-    AwsStandardLibraryFunctions(jobDescriptor, awsConfiguration.awsAttributes)
-  }
+  override lazy val fileHashingFunction: Option[FileHashingFunction] =
+    Option(FileHashingFunction(AwsBackendActorFactory.md5HashingFunction))
 }
