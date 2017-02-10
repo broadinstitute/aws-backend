@@ -6,27 +6,35 @@ import com.amazonaws.auth.{AWSCredentials, AWSCredentialsProvider}
 import com.amazonaws.retry.RetryPolicy
 import com.amazonaws.services.ecs.AmazonECSAsyncClient
 import com.amazonaws.services.ecs.model._
+import cromwell.backend.MemorySize
 import cromwell.backend.impl.aws.util.AwsSdkAsyncHandler
+import wdl4s.parser.MemoryUnit
 
 import scala.collection.JavaConverters._
 import scala.concurrent.Await
 import scala.concurrent.duration.Duration
 
+object AwsTaskRunner {
+  var cacheKeyToTaskDefinition: Map[String, TaskDefinition] = Map.empty
+}
+
 
 trait AwsTaskRunner {
   self: ActorLogging with Actor =>
 
-  var imageToTaskDefinition: Map[String, TaskDefinition] = Map.empty
+  import AwsTaskRunner._
 
   val containerName = "cromwell-container-name"
 
-  private def getOrCreateTaskDefinition(image: String): TaskDefinition = {
-    if (!imageToTaskDefinition.contains(image)) {
-      // DANGER total hack.  This calls into question the whole AWS backend approach.
-      // It also completely punts on handling memory or CPU resources and task definitions
-      // are no longer being cleaned up.
-      image.intern.synchronized {
-        if (!imageToTaskDefinition.contains(image)) {
+  private def getOrCreateTaskDefinition(image: String, memorySize: MemorySize, cpu: Int): TaskDefinition = {
+    val cacheKey = s"$image $memorySize $cpu"
+
+    if (!cacheKeyToTaskDefinition.contains(cacheKey)) {
+      // TODO clean up task definitions and use the Batch API to override memory and CPU.
+
+      cacheKey.intern.synchronized {
+        if (!cacheKeyToTaskDefinition.contains(cacheKey)) {
+          log.info(s"Cache miss for $cacheKey, creating new task definition.")
           val volumeProperties = new HostVolumeProperties().withSourcePath(awsAttributes.hostMountPoint)
           val cromwellVolume = "cromwell-volume"
           val volume = new Volume().withHost(volumeProperties).withName(cromwellVolume)
@@ -39,7 +47,8 @@ trait AwsTaskRunner {
             .withName(containerName)
             .withCommand("/bin/sh", "-xv", "-c", "echo Default command")
             .withImage(image)
-            .withMemory(awsAttributes.containerMemoryMib)
+            .withMemory(memorySize.to(MemoryUnit.MiB).amount.toInt)
+            .withCpu(cpu)
             .withMountPoints(mountPoint)
             .withEnvironment(accessKey, secretAccessKey)
             .withEssential(true)
@@ -49,16 +58,27 @@ trait AwsTaskRunner {
             .withContainerDefinitions(containerDefinition)
             .withVolumes(volume)
 
-          val taskDefinition = ecsAsyncClient.registerTaskDefinition(registerTaskDefinitionRequest).getTaskDefinition
-          imageToTaskDefinition += image -> taskDefinition
+          def registerTaskDefinition(count: Int = 1): Unit = {
+            try {
+              val taskDefinition = ecsAsyncClient.registerTaskDefinition(registerTaskDefinitionRequest).getTaskDefinition
+              cacheKeyToTaskDefinition += cacheKey -> taskDefinition
+            } catch {
+              case e: ClientException if e.getMessage.contains("Too many concurrent attempts to create a new revision of the specified family.") =>
+                log.warning(s"Caught task definition throttling exception for $cacheKey on attempt $count, retrying")
+                Thread.sleep(1000)
+                registerTaskDefinition(count + 1)
+            }
+          }
+
+          registerTaskDefinition()
         }
       }
     }
-    imageToTaskDefinition(image)
+    cacheKeyToTaskDefinition(cacheKey)
   }
 
-  def runTaskAsync(command: String, dockerImage: String, awsAttributes: AwsAttributes): RunTaskResult = {
-    val taskDefinition = getOrCreateTaskDefinition(dockerImage)
+  def doRunTask(command: String, dockerImage: String, memorySize: MemorySize, cpu: Int, awsAttributes: AwsAttributes): RunTaskResult = {
+    val taskDefinition = getOrCreateTaskDefinition(dockerImage, memorySize, cpu)
 
     val commandOverride = new ContainerOverride()
       .withCommand("/bin/sh", "-c", command)
@@ -76,8 +96,8 @@ trait AwsTaskRunner {
     taskResult
   }
 
-  def runTask(command: String, dockerImage: String, awsAttributes: AwsAttributes): Task = {
-    val taskResult = runTaskAsync(command, dockerImage, awsAttributes)
+  def runTask(command: String, dockerImage: String, memorySize: MemorySize, cpu: Int, awsAttributes: AwsAttributes): Task = {
+    val taskResult = doRunTask(command, dockerImage, memorySize, cpu, awsAttributes)
     // Error checking needed here, if something is wrong getTasks will be empty.
     waitUntilDone(taskResult.getTasks.asScala.head)
   }
