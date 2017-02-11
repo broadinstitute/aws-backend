@@ -3,8 +3,8 @@ package cromwell.backend.impl.aws
 import java.time.{OffsetDateTime, ZoneId}
 import java.util.Date
 
-import com.amazonaws.services.ecs.model.{DescribeTasksRequest, Task}
-import cromwell.backend.async.{ExecutionHandle, FailedNonRetryableExecutionHandle, PendingExecutionHandle}
+import com.amazonaws.services.ecs.model.Task
+import cromwell.backend.async.{ExecutionHandle, FailedNonRetryableExecutionHandle, FailedRetryableExecutionHandle, PendingExecutionHandle}
 import cromwell.backend.standard.{StandardAsyncExecutionActor, StandardAsyncExecutionActorParams, StandardAsyncJob}
 import cromwell.backend.validation.{CpuValidation, DockerValidation, MemoryValidation, RuntimeAttributesValidation}
 import cromwell.backend.{BackendInitializationData, BackendJobLifecycleActor}
@@ -50,37 +50,29 @@ class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecut
     val runTaskResult = doRunTask(cromwellCommand, docker, memory, cpu, awsConfiguration.awsAttributes)
 
     log.info("AWS submission completed:\n{}", runTaskResult)
-    val taskArn = runTaskResult.getTasks.asScala.head.getTaskArn
+    val taskArn = runTaskResult.getTasks.asScala.headOption match {
+      case Some(task) => task.getTaskArn
+      case None =>
+        val failures = runTaskResult.getFailures.asScala
+        // This is purposefully not a fatal exception as there can be transient eventual consistency failures.
+        throw new AwsNonFatalException(s"Task creation failed due to failures:\n${failures.mkString("\n")}")
+    }
 
     PendingExecutionHandle(jobDescriptor, StandardAsyncJob(taskArn), None, None)
   }
 
   override def pollStatus(handle: StandardAsyncPendingExecutionHandle): AwsRunStatus = {
     val taskArn = handle.pendingJob.jobId
+    val describeTasksResult = describeTasks(taskArn)
 
-    val describeTasksRequest = new DescribeTasksRequest()
-      .withCluster(awsAttributes.clusterName)
-      .withTasks(List(taskArn).asJava)
+    val tasks = describeTasksResult.getTasks.asScala
 
-
-    def describeTask(count: Int = 1): AwsRunStatus = {
-      val describeTasksResult = ecsAsyncClient.describeTasks(describeTasksRequest)
-
-      val tasks = describeTasksResult.getTasks.asScala
-
-      tasks.headOption match {
-        case Some(t) => AwsRunStatus(t)
-        case None =>
-          // This is purposefully not a fatal exception as there can be transient eventual consistency failures.
-          // A non-`CromwellFatalException` exception here will be retried.
-          // throw new RuntimeException(s"Task $taskArn not found.")
-          log.info(s"Could not find task for arn $taskArn attempt $count, retrying.")
-          Thread.sleep(1000)
-          describeTask(count + 1)
-      }
+    tasks.headOption match {
+      case Some(t) => AwsRunStatus(t)
+      case None =>
+        // This is purposefully not a fatal exception as there can be transient eventual consistency failures.
+        throw new AwsNonFatalException(s"Could not find task for arn $taskArn")
     }
-
-    describeTask()
   }
 
   override def isTerminal(runStatus: AwsRunStatus): Boolean = isStopped(runStatus.task)
@@ -115,12 +107,21 @@ class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecut
     super.handleExecutionSuccess(runStatus, handle, returnCode)
   }
 
+  private val RetryableFailureReasons = Seq(
+    "CannotPullContainerError: failed to register layer: devicemapper: Error running deviceResume dm_task_run failed"
+  )
+
   override def handleExecutionFailure(runStatus: AwsRunStatus,
                                       handle: StandardAsyncPendingExecutionHandle,
                                       returnCode: Option[Int]): ExecutionHandle = {
     log.info("AWS task failed!\n{}", runStatus.task)
     val reason = containerReasonExit(runStatus.task).getOrElse("unknown")
-    FailedNonRetryableExecutionHandle(new Exception(s"Task failed for reason: $reason"), returnCode)
+    reason match {
+      case _ if RetryableFailureReasons.contains(reason) =>
+        FailedRetryableExecutionHandle(new Exception(s"Task failed for retryable reason: $reason"), returnCode)
+      case _ =>
+        FailedNonRetryableExecutionHandle(new Exception(s"Task failed for reason: $reason"), returnCode)
+    }
   }
 
   override def getTerminalEvents(runStatus: AwsRunStatus): Seq[ExecutionEvent] = {

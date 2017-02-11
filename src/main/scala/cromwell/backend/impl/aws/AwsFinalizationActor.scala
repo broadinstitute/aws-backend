@@ -39,7 +39,8 @@ case class AwsFinalizationActor(override val standardParams: StandardFinalizatio
       val delocalizationScript = workflowInputsDirectory.createTempFile("delocalization", ".sh").chmod(allPermissions)
       delocalizationScript.write(commands)
 
-      runTask(s"sh ${delocalizationScript.pathWithoutScheme}", AwsBackendActorFactory.AwsCliImage, MemorySize(4096, MemoryUnit.MiB), 1, awsAttributes)
+      runTask(s"sh ${delocalizationScript.pathWithoutScheme}", AwsBackendActorFactory.AwsCliImage,
+        MemorySize(awsAttributes.containerMemoryMib.toDouble, MemoryUnit.MiB), 1, awsAttributes)
     }
     super.afterAll()
   }

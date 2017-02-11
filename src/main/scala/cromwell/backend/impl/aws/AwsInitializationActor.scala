@@ -31,7 +31,7 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
   override def runtimeAttributesBuilder: StandardValidatedRuntimeAttributesBuilder = {
     super.runtimeAttributesBuilder.withValidation(
       DockerValidation.instance,
-      MemoryValidation.withDefaultMemory(MemorySize(4, MemoryUnit.GiB)),
+      MemoryValidation.withDefaultMemory(MemorySize(awsAttributes.containerMemoryMib.toDouble, MemoryUnit.MiB)),
       CpuValidation.default
     )
   }
@@ -80,7 +80,8 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
       val localizationScript = workflowInputsDirectory.createTempFile("localization", ".sh").chmod(allPermissions)
       localizationScript.write(commands)
 
-      runTask(s"sh ${localizationScript.pathWithoutScheme}", AwsBackendActorFactory.AwsCliImage, MemorySize(4096, MemoryUnit.MiB), 1, awsAttributes)
+      runTask(s"sh ${localizationScript.pathWithoutScheme}", AwsBackendActorFactory.AwsCliImage,
+        MemorySize(awsAttributes.containerMemoryMib.toDouble, MemoryUnit.MiB), 1, awsAttributes)
       Option(initializationData)
     })
   }

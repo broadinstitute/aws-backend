@@ -7,12 +7,9 @@ import com.amazonaws.retry.RetryPolicy
 import com.amazonaws.services.ecs.AmazonECSAsyncClient
 import com.amazonaws.services.ecs.model._
 import cromwell.backend.MemorySize
-import cromwell.backend.impl.aws.util.AwsSdkAsyncHandler
 import wdl4s.parser.MemoryUnit
 
 import scala.collection.JavaConverters._
-import scala.concurrent.Await
-import scala.concurrent.duration.Duration
 
 object AwsTaskRunner {
   var cacheKeyToTaskDefinition: Map[String, TaskDefinition] = Map.empty
@@ -24,7 +21,32 @@ trait AwsTaskRunner {
 
   import AwsTaskRunner._
 
+  def awsConfiguration: AwsConfiguration
+
   val containerName = "cromwell-container-name"
+
+  lazy val awsAttributes: AwsAttributes = awsConfiguration.awsAttributes
+
+  lazy val credentials = new AWSCredentials {
+    override def getAWSAccessKeyId: String = awsAttributes.accessKeyId
+
+    override def getAWSSecretKey: String = awsAttributes.secretKey
+  }
+
+  final val clientConfiguration = new ClientConfiguration()
+  clientConfiguration.setMaxErrorRetry(25)
+  clientConfiguration.setRetryPolicy(new RetryPolicy(null, null, 25, true))
+
+  lazy val credentialsProvider = new AWSCredentialsProvider {
+    override def refresh(): Unit = ()
+
+    override def getCredentials: AWSCredentials = credentials
+  }
+
+  lazy val ecsAsyncClient = new AmazonECSAsyncClient(credentialsProvider, clientConfiguration)
+
+  // http://docs.aws.amazon.com/AWSJavaSDK/latest/javadoc/com/amazonaws/services/ecs/model/ContainerDefinition.html#withCpu-java.lang.Integer-
+  private val CpuUnitsPerCore = 1024
 
   private def getOrCreateTaskDefinition(image: String, memorySize: MemorySize, cpu: Int): TaskDefinition = {
     val cacheKey = s"$image $memorySize $cpu"
@@ -48,7 +70,7 @@ trait AwsTaskRunner {
             .withCommand("/bin/sh", "-xv", "-c", "echo Default command")
             .withImage(image)
             .withMemory(memorySize.to(MemoryUnit.MiB).amount.toInt)
-            .withCpu(cpu)
+            .withCpu(cpu * CpuUnitsPerCore)
             .withMountPoints(mountPoint)
             .withEnvironment(accessKey, secretAccessKey)
             .withEssential(true)
@@ -58,19 +80,14 @@ trait AwsTaskRunner {
             .withContainerDefinitions(containerDefinition)
             .withVolumes(volume)
 
-          def registerTaskDefinition(count: Int = 1): Unit = {
-            try {
-              val taskDefinition = ecsAsyncClient.registerTaskDefinition(registerTaskDefinitionRequest).getTaskDefinition
-              cacheKeyToTaskDefinition += cacheKey -> taskDefinition
-            } catch {
-              case e: ClientException if e.getMessage.contains("Too many concurrent attempts to create a new revision of the specified family.") =>
-                log.warning(s"Caught task definition throttling exception for $cacheKey on attempt $count, retrying")
-                Thread.sleep(1000)
-                registerTaskDefinition(count + 1)
-            }
+          try {
+            val taskDefinition = ecsAsyncClient.registerTaskDefinition(registerTaskDefinitionRequest).getTaskDefinition
+            cacheKeyToTaskDefinition += cacheKey -> taskDefinition
+          } catch {
+            case e: ClientException if e.getMessage.contains(
+                "Too many concurrent attempts to create a new revision of the specified family.") =>
+              throw new AwsNonFatalException(e.getMessage, e)
           }
-
-          registerTaskDefinition()
         }
       }
     }
@@ -97,53 +114,40 @@ trait AwsTaskRunner {
   }
 
   def runTask(command: String, dockerImage: String, memorySize: MemorySize, cpu: Int, awsAttributes: AwsAttributes): Task = {
-    val taskResult = doRunTask(command, dockerImage, memorySize, cpu, awsAttributes)
-    // Error checking needed here, if something is wrong getTasks will be empty.
-    waitUntilDone(taskResult.getTasks.asScala.head)
+    def retryRunTask(count: Int = 1): Task = {
+      try {
+        val taskResult = doRunTask(command, dockerImage, memorySize, cpu, awsAttributes)
+        taskResult.getTasks.asScala.headOption match {
+          case Some(headTask) => headTask
+          case None =>
+            val failures = taskResult.getFailures.asScala
+            throw new AwsNonFatalException(s"task was not created due to failures:\n${failures.mkString("\n")}")
+        }
+
+      } catch {
+        case e: AwsNonFatalException if count <= 120 =>
+          log.warning(s"""Caught exception during attempt $count, "${e.getMessage}", retrying in 1 second""")
+          Thread.sleep(1000L)
+          retryRunTask(count + 1)
+      }
+    }
+
+    val task = retryRunTask()
+    waitUntilDone(task)
   }
-
-  def awsConfiguration: AwsConfiguration
-
-  lazy val awsAttributes: AwsAttributes = awsConfiguration.awsAttributes
-
-  lazy val credentials = new AWSCredentials {
-    override def getAWSAccessKeyId: String = awsAttributes.accessKeyId
-
-    override def getAWSSecretKey: String = awsAttributes.secretKey
-  }
-
-  final val clientConfiguration = new ClientConfiguration()
-  clientConfiguration.setMaxErrorRetry(25)
-  clientConfiguration.setRetryPolicy(new RetryPolicy(null, null, 25, true))
-
-  lazy val credentialsProvider = new AWSCredentialsProvider {
-    override def refresh(): Unit = ()
-
-    override def getCredentials: AWSCredentials = credentials
-  }
-
-  lazy val ecsAsyncClient = new AmazonECSAsyncClient(credentialsProvider, clientConfiguration)
 
   protected def describeTasks(task: Task): DescribeTasksResult = {
     val taskArn = task.getTaskArn
     log.info("Checking status for {}", taskArn)
+    describeTasks(taskArn)
+  }
+
+  protected def describeTasks(taskArn: String): DescribeTasksResult = {
     val describeTasksRequest = new DescribeTasksRequest()
       .withCluster(awsAttributes.clusterName)
       .withTasks(List(taskArn).asJava)
 
-    val resultHandler = new AwsSdkAsyncHandler[DescribeTasksRequest, DescribeTasksResult]()
-    val _ = ecsAsyncClient.describeTasksAsync(describeTasksRequest, resultHandler)
-
-    val describedTasks = Await.result(resultHandler.future, Duration.Inf)
-    describedTasks.result
-  }
-
-  protected def isStopped(describedTasks: DescribeTasksResult): Boolean = {
-    describedTasks.getTasks.asScala.headOption match {
-      case Some(describedTask) if isStopped(describedTask) => true
-      case None => false // TODO: If we don't find our task... then we should error?
-      case _ => false
-    }
+    ecsAsyncClient.describeTasks(describeTasksRequest)
   }
 
   protected def isStopped(describedTask: Task): Boolean = {
