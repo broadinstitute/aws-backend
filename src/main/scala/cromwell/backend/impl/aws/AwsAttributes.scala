@@ -11,7 +11,8 @@ import org.slf4j.{Logger, LoggerFactory}
 
 import scala.collection.JavaConversions._
 
-case class AwsAttributes(root: String, accessKeyId: String, secretKey: String, clusterName: String, containerMemoryMib: Int, hostMountPoint: String, containerMountPoint: String)
+case class AwsAttributes(root: String, accessKeyId: String, secretKey: String, jobQueueName: String,
+                         containerMemoryMib: Int, hostMountPoint: String, containerMountPoint: String)
 
 object AwsAttributes {
   lazy val Logger: Logger = LoggerFactory.getLogger("AwsAttributes")
@@ -20,7 +21,7 @@ object AwsAttributes {
     "root",
     "access-key-id",
     "secret-key",
-    "cluster-name",
+    "job-queue-name",
     "container-memory-mib",
     "host-mount-point",
     "container-mount-point",
@@ -36,12 +37,12 @@ object AwsAttributes {
     val root: ErrorOr[String] = validate { backendConfig.as[String]("root") }
     val accessKeyId: ErrorOr[String] = validate { backendConfig.as[String]("access-key-id") }
     val secretKey: ErrorOr[String] = validate { backendConfig.as[String]("secret-key") }
-    val clusterName: ErrorOr[String] = validate { backendConfig.as[String]("cluster-name") }
+    val jobQueueName: ErrorOr[String] = validate { backendConfig.as[String]("job-queue-name") }
     val containerMemoryMib: ErrorOr[Int] = validate { backendConfig.as[Int]("container-memory-mib") }
     val hostMountPoint: ErrorOr[String] = validate { backendConfig.as[String]("host-mount-point") }
     val containerMountPoint: ErrorOr[String] = validate { backendConfig.as[String]("container-mount-point") }
 
-    (root |@| accessKeyId |@| secretKey |@| clusterName |@| containerMemoryMib |@| hostMountPoint |@| containerMountPoint) map {
+    (root |@| accessKeyId |@| secretKey |@| jobQueueName |@| containerMemoryMib |@| hostMountPoint |@| containerMountPoint) map {
       AwsAttributes(_, _, _, _, _, _, _)
     } match {
       case Valid(r) => r

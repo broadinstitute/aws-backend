@@ -10,7 +10,7 @@ import wdl4s.values.WdlSingleFile
 import scala.concurrent.Future
 
 case class AwsFinalizationActor(override val standardParams: StandardFinalizationActorParams
-                               ) extends StandardFinalizationActor(standardParams) with AwsTaskRunner {
+                               ) extends StandardFinalizationActor(standardParams) with AwsJobRunner {
 
   lazy val awsBackendInitializationData: AwsBackendInitializationData = {
     BackendInitializationData.as[AwsBackendInitializationData](initializationDataOption)
@@ -39,7 +39,8 @@ case class AwsFinalizationActor(override val standardParams: StandardFinalizatio
       val delocalizationScript = workflowInputsDirectory.createTempFile("delocalization", ".sh").chmod(allPermissions)
       delocalizationScript.write(commands)
 
-      runTask(s"sh ${delocalizationScript.pathWithoutScheme}", AwsBackendActorFactory.AwsCliImage, MemorySize(4096, MemoryUnit.MiB), 1, awsAttributes)
+      runJobAndWait(s"sh ${delocalizationScript.pathWithoutScheme}", AwsBackendActorFactory.AwsCliImage,
+        MemorySize(awsAttributes.containerMemoryMib.toDouble, MemoryUnit.MiB), 1, awsAttributes)
     }
     super.afterAll()
   }

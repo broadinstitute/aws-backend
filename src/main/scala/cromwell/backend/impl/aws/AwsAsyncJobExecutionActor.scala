@@ -1,10 +1,9 @@
 package cromwell.backend.impl.aws
 
-import java.time.{OffsetDateTime, ZoneId}
-import java.util.Date
+import java.time.{Instant, OffsetDateTime, ZoneId}
 
-import com.amazonaws.services.ecs.model.{DescribeTasksRequest, Task}
-import cromwell.backend.async.{ExecutionHandle, FailedNonRetryableExecutionHandle, PendingExecutionHandle}
+import com.amazonaws.services.batch.model._
+import cromwell.backend.async.{ExecutionHandle, FailedNonRetryableExecutionHandle, FailedRetryableExecutionHandle, PendingExecutionHandle}
 import cromwell.backend.standard.{StandardAsyncExecutionActor, StandardAsyncExecutionActorParams, StandardAsyncJob}
 import cromwell.backend.validation.{CpuValidation, DockerValidation, MemoryValidation, RuntimeAttributesValidation}
 import cromwell.backend.{BackendInitializationData, BackendJobLifecycleActor}
@@ -16,12 +15,12 @@ import wdl4s.values.{WdlFile, WdlSingleFile}
 import scala.collection.JavaConverters._
 import scala.concurrent.duration._
 
-case class AwsRunStatus(task: Task) {
-  override lazy val toString: String = task.getLastStatus
+case class AwsRunStatus(jobDetail: JobDetail) {
+  override lazy val toString: String = jobDetail.getStatus
 }
 
 class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecutionActorParams)
-  extends BackendJobLifecycleActor with StandardAsyncExecutionActor with AwsTaskRunner {
+  extends BackendJobLifecycleActor with StandardAsyncExecutionActor with AwsJobRunner {
 
   override type StandardAsyncRunInfo = Any
   override type StandardAsyncRunStatus = AwsRunStatus
@@ -47,45 +46,31 @@ class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecut
     val docker = RuntimeAttributesValidation.extract(DockerValidation.instance, validatedRuntimeAttributes)
     val memory = RuntimeAttributesValidation.extract(MemoryValidation.instance, validatedRuntimeAttributes)
     val cpu = RuntimeAttributesValidation.extract(CpuValidation.instance, validatedRuntimeAttributes)
-    val runTaskResult = doRunTask(cromwellCommand, docker, memory, cpu, awsConfiguration.awsAttributes)
+    val runJobResult = submitJob(cromwellCommand, docker, memory, cpu, awsConfiguration.awsAttributes)
 
-    log.info("AWS submission completed:\n{}", runTaskResult)
-    val taskArn = runTaskResult.getTasks.asScala.head.getTaskArn
+    log.info("AWS submission completed:\n{}", runJobResult)
+    val jobId = runJobResult.getJobId
 
-    PendingExecutionHandle(jobDescriptor, StandardAsyncJob(taskArn), None, None)
+    PendingExecutionHandle(jobDescriptor, StandardAsyncJob(jobId), None, None)
   }
 
   override def pollStatus(handle: StandardAsyncPendingExecutionHandle): AwsRunStatus = {
-    val taskArn = handle.pendingJob.jobId
+    val jobId = handle.pendingJob.jobId
+    val describeJobsResult = describeJob(jobId)
 
-    val describeTasksRequest = new DescribeTasksRequest()
-      .withCluster(awsAttributes.clusterName)
-      .withTasks(List(taskArn).asJava)
+    val jobs = describeJobsResult.getJobs.asScala
 
-
-    def describeTask(count: Int = 1): AwsRunStatus = {
-      val describeTasksResult = ecsAsyncClient.describeTasks(describeTasksRequest)
-
-      val tasks = describeTasksResult.getTasks.asScala
-
-      tasks.headOption match {
-        case Some(t) => AwsRunStatus(t)
-        case None =>
-          // This is purposefully not a fatal exception as there can be transient eventual consistency failures.
-          // A non-`CromwellFatalException` exception here will be retried.
-          // throw new RuntimeException(s"Task $taskArn not found.")
-          log.info(s"Could not find task for arn $taskArn attempt $count, retrying.")
-          Thread.sleep(1000)
-          describeTask(count + 1)
-      }
+    jobs.headOption match {
+      case Some(jobDetail) => AwsRunStatus(jobDetail)
+      case None =>
+        // This is purposefully not a fatal exception as there can be transient eventual consistency failures.
+        throw new AwsNonFatalException(s"Could not find job for arn $jobId")
     }
-
-    describeTask()
   }
 
-  override def isTerminal(runStatus: AwsRunStatus): Boolean = isStopped(runStatus.task)
+  override def isTerminal(runStatus: AwsRunStatus): Boolean = isTerminal(runStatus.jobDetail)
 
-  override def isSuccess(runStatus: AwsRunStatus): Boolean = isSuccess(runStatus.task)
+  override def isSuccess(runStatus: AwsRunStatus): Boolean = isSuccess(runStatus.jobDetail)
 
   override def mapCommandLineWdlFile(wdlFile: WdlFile): WdlFile = {
     val path = PathFactory.buildPath(wdlFile.value, workflowPaths.pathBuilders)
@@ -111,27 +96,34 @@ class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecut
   override def handleExecutionSuccess(runStatus: AwsRunStatus,
                                       handle: StandardAsyncPendingExecutionHandle,
                                       returnCode: Int): ExecutionHandle = {
-    log.info("AWS task completed!\n{}", runStatus.task)
+    log.info("AWS job completed!\n{}", runStatus.jobDetail)
     super.handleExecutionSuccess(runStatus, handle, returnCode)
   }
 
   override def handleExecutionFailure(runStatus: AwsRunStatus,
                                       handle: StandardAsyncPendingExecutionHandle,
                                       returnCode: Option[Int]): ExecutionHandle = {
-    log.info("AWS task failed!\n{}", runStatus.task)
-    val reason = containerReasonExit(runStatus.task).getOrElse("unknown")
-    FailedNonRetryableExecutionHandle(new Exception(s"Task failed for reason: $reason"), returnCode)
+    log.info("AWS job failed!\n{}", runStatus.jobDetail)
+    val reason = containerReasonExit(runStatus.jobDetail).getOrElse("unknown")
+    if (isRetryableReason(reason)) {
+      FailedRetryableExecutionHandle(
+        new Exception(s"Job ${runStatus.jobDetail.getJobId} failed for retryable reason: $reason"), returnCode)
+    } else {
+      FailedNonRetryableExecutionHandle(
+        new Exception(s"Job ${runStatus.jobDetail.getJobId} failed for reason: $reason"), returnCode)
+    }
   }
 
   override def getTerminalEvents(runStatus: AwsRunStatus): Seq[ExecutionEvent] = {
     Seq(
-      "createdAt" -> Option(runStatus.task.getCreatedAt),
-      "startedAt" -> Option(runStatus.task.getStartedAt),
-      "stoppedAt" -> Option(runStatus.task.getStoppedAt)
+      "createdAt" -> Option(runStatus.jobDetail.getCreatedAt),
+      "startedAt" -> Option(runStatus.jobDetail.getStartedAt),
+      "stoppedAt" -> Option(runStatus.jobDetail.getStoppedAt)
     ) collect {
-      case (name, Some(date)) => new ExecutionEvent(name, dateToTime(date))
+      case (name, Some(epochMillis)) => new ExecutionEvent(name, dateToTime(epochMillis))
     }
   }
 
-  private def dateToTime(date: Date): OffsetDateTime = OffsetDateTime.ofInstant(date.toInstant, ZoneId.systemDefault)
+  private def dateToTime(epochMillis: Long): OffsetDateTime =
+    OffsetDateTime.ofInstant(Instant.ofEpochMilli(epochMillis), ZoneId.systemDefault)
 }

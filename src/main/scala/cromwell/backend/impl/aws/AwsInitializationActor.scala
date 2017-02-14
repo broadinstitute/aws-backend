@@ -12,7 +12,6 @@ import wdl4s.values.{WdlArray, WdlSingleFile, WdlValue}
 
 import scala.collection.immutable.Seq
 import scala.concurrent.Future
-import scala.language.postfixOps
 import scala.util.Try
 
 case class AwsBackendInitializationData
@@ -23,7 +22,7 @@ case class AwsBackendInitializationData
 ) extends StandardInitializationData(workflowPaths, runtimeAttributesBuilder, classOf[AwsExpressionFunctions])
 
 class AwsInitializationActor(standardParams: StandardInitializationActorParams)
-  extends StandardInitializationActor(standardParams) with AwsTaskRunner {
+  extends StandardInitializationActor(standardParams) with AwsJobRunner {
   awsInitializationActor =>
 
   override val awsConfiguration = AwsConfiguration(configurationDescriptor)
@@ -31,7 +30,7 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
   override def runtimeAttributesBuilder: StandardValidatedRuntimeAttributesBuilder = {
     super.runtimeAttributesBuilder.withValidation(
       DockerValidation.instance,
-      MemoryValidation.withDefaultMemory(MemorySize(4, MemoryUnit.GiB)),
+      MemoryValidation.withDefaultMemory(MemorySize(awsAttributes.containerMemoryMib.toDouble, MemoryUnit.MiB)),
       CpuValidation.default
     )
   }
@@ -63,14 +62,15 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
 
       // Workflow inputs have to be S3 cp'd onesie twosie
       val paths = workflowDescriptor.knownValues.values flatMap pathsFromWdlValue
-      val localizeWorkflowInputs: Seq[String] = paths collect {
-        case path: MappedPath =>
-          val parentDirectory = path.parent
-          List(
-            s"mkdir -m 777 -p $parentDirectory",
-            s"(cd $parentDirectory && /usr/bin/aws s3 cp ${path.prefixedPathAsString} .)"
-          ).mkString(" && \\\n    ")
-      } toList
+      val mappedPaths = paths collect { case path: MappedPath => path }
+      val mappedPathsByParent = mappedPaths.toSeq.distinct.groupBy(_.parent)
+      val localizeWorkflowInputs = mappedPathsByParent map {
+        case (parentDirectory, childPaths) =>
+          s"""|mkdir -m 777 -p $parentDirectory && \\
+              |(cd $parentDirectory && \\
+              |${childPaths.map(path => s"/usr/bin/aws s3 cp ${path.prefixedPathAsString} .").mkString(" && \\\n")})
+              |""".stripMargin
+      }
       val commands = localizeWorkflowInputs.mkString(" && \\\n")
       log.info("initialization commands: {}", commands)
 
@@ -80,7 +80,8 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
       val localizationScript = workflowInputsDirectory.createTempFile("localization", ".sh").chmod(allPermissions)
       localizationScript.write(commands)
 
-      runTask(s"sh ${localizationScript.pathWithoutScheme}", AwsBackendActorFactory.AwsCliImage, MemorySize(4096, MemoryUnit.MiB), 1, awsAttributes)
+      runJobAndWait(s"sh ${localizationScript.pathWithoutScheme}", AwsBackendActorFactory.AwsCliImage,
+        MemorySize(awsAttributes.containerMemoryMib.toDouble, MemoryUnit.MiB), 1, awsAttributes)
       Option(initializationData)
     })
   }
