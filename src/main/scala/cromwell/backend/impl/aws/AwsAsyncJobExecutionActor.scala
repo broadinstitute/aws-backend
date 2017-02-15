@@ -104,7 +104,7 @@ class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecut
                                       handle: StandardAsyncPendingExecutionHandle,
                                       returnCode: Option[Int]): ExecutionHandle = {
     log.info("AWS job failed!\n{}", runStatus.jobDetail)
-    val reason = containerReasonExit(runStatus.jobDetail).getOrElse("unknown")
+    val reason = containerReasonExit(runStatus.jobDetail).getOrElse(s"unknown error: ${runStatus.jobDetail}")
     if (isRetryableReason(reason)) {
       FailedRetryableExecutionHandle(
         new Exception(s"Job ${runStatus.jobDetail.getJobId} failed for retryable reason: $reason"), returnCode)

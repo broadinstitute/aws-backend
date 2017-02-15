@@ -158,7 +158,7 @@ trait AwsJobRunner {
       val jobId = submitJobResult.getJobId
       val jobDetail = waitUntilDone(jobId)
       if (!isSuccess(jobDetail)) {
-        val reason = containerReasonExit(jobDetail).getOrElse("unknown")
+        val reason = containerReasonExit(jobDetail).getOrElse(s"unknown error: $jobDetail")
         if (isRetryableReason(reason)) {
           log.info(s"Retrying job $jobId in 1 second due to attempt $count failure: $reason")
           Thread.sleep(1000L)
