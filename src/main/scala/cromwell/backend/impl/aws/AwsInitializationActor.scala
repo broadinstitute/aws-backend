@@ -22,7 +22,7 @@ case class AwsBackendInitializationData
 ) extends StandardInitializationData(workflowPaths, runtimeAttributesBuilder, classOf[AwsExpressionFunctions])
 
 class AwsInitializationActor(standardParams: StandardInitializationActorParams)
-  extends StandardInitializationActor(standardParams) with AwsJobRunner {
+  extends StandardInitializationActor(standardParams) with AwsJobRunner with AwsBucketTransfer {
   awsInitializationActor =>
 
   override val awsConfiguration = AwsConfiguration(configurationDescriptor)
@@ -58,8 +58,6 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
     }
 
     Future.fromTry(Try {
-      val awsAttributes = awsConfiguration.awsAttributes
-
       // Workflow inputs have to be S3 cp'd onesie twosie
       val paths = workflowDescriptor.knownValues.values flatMap pathsFromWdlValue
       val mappedPaths = paths collect { case path: MappedPath => path }
@@ -68,7 +66,7 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
         case (parentDirectory, childPaths) =>
           s"""|mkdir -m 777 -p $parentDirectory && \\
               |(cd $parentDirectory && \\
-              |${childPaths.map(path => s"/usr/bin/aws s3 cp ${path.prefixedPathAsString} .").mkString(" && \\\n")})
+              |${childPaths.map(path => s"/usr/bin/aws s3 cp ${path.prefixedPathAsString} .").mkString(" && \\\n")}) \\
               |""".stripMargin
       }
       val commands = localizeWorkflowInputs.mkString(" && \\\n")
@@ -77,11 +75,13 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
       val allPermissions = "rwxrwxrwx"
       workflowRootDirectory.createDirectories().chmod(allPermissions)
       workflowInputsDirectory.createDirectories().chmod(allPermissions)
-      val localizationScript = workflowInputsDirectory.createTempFile("localization", ".sh").chmod(allPermissions)
+      val localizationDirectory = workflowInputsDirectory.resolve("localization")
+      localizationDirectory.createDirectories().chmod(allPermissions)
+      val localizationScript = localizationDirectory.createTempFile("localization", ".sh").chmod(allPermissions)
       localizationScript.write(commands)
 
-      runJobAndWait(s"sh ${localizationScript.pathWithoutScheme}", AwsBackendActorFactory.AwsCliImage,
-        MemorySize(awsAttributes.containerMemoryMib.toDouble, MemoryUnit.MiB), 1, awsAttributes)
+      runBucketTransferScript(localizationScript)
+
       Option(initializationData)
     })
   }

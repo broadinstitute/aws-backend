@@ -4,13 +4,12 @@ import cromwell.backend._
 import cromwell.backend.standard.{StandardFinalizationActor, StandardFinalizationActorParams}
 import cromwell.core.JobOutput
 import cromwell.core.path.{DefaultPathBuilder, Path}
-import wdl4s.parser.MemoryUnit
 import wdl4s.values.WdlSingleFile
 
 import scala.concurrent.Future
 
 case class AwsFinalizationActor(override val standardParams: StandardFinalizationActorParams
-                               ) extends StandardFinalizationActor(standardParams) with AwsJobRunner {
+                               ) extends StandardFinalizationActor(standardParams) with AwsJobRunner with AwsBucketTransfer {
 
   lazy val awsBackendInitializationData: AwsBackendInitializationData = {
     BackendInitializationData.as[AwsBackendInitializationData](initializationDataOption)
@@ -36,11 +35,13 @@ case class AwsFinalizationActor(override val standardParams: StandardFinalizatio
       log.info("finalization commands: {}", commands)
 
       val allPermissions = "rwxrwxrwx"
-      val delocalizationScript = workflowInputsDirectory.createTempFile("delocalization", ".sh").chmod(allPermissions)
+      val delocalizationDirectory = workflowInputsDirectory.resolve("delocalization")
+      delocalizationDirectory.createDirectories().chmod(allPermissions)
+
+      val delocalizationScript = delocalizationDirectory.createTempFile("delocalization", ".sh").chmod(allPermissions)
       delocalizationScript.write(commands)
 
-      runJobAndWait(s"sh ${delocalizationScript.pathWithoutScheme}", AwsBackendActorFactory.AwsCliImage,
-        MemorySize(awsAttributes.containerMemoryMib.toDouble, MemoryUnit.MiB), 1, awsAttributes)
+      runBucketTransferScript(delocalizationScript)
     }
     super.afterAll()
   }
