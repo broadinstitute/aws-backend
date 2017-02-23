@@ -139,7 +139,8 @@ trait AwsJobRunner {
   }
 
   private val RetryableFailureReasons = Seq(
-    "CannotCreateContainerError: API error (500): devicemapper: Error running deviceResume dm_task_run failed"
+    "CannotCreateContainerError: API error (500): devicemapper: Error running deviceResume dm_task_run failed",
+    "CannotPullContainerError: failed to register layer: devicemapper: Error running deviceResume dm_task_run failed"
   )
 
   protected def isRetryableReason(reason: String): Boolean = {
