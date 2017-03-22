@@ -42,9 +42,9 @@ object AwsAttributes {
     val hostMountPoint: ErrorOr[String] = validate { backendConfig.as[String]("host-mount-point") }
     val containerMountPoint: ErrorOr[String] = validate { backendConfig.as[String]("container-mount-point") }
 
-    (root |@| accessKeyId |@| secretKey |@| jobQueueName |@| containerMemoryMib |@| hostMountPoint |@| containerMountPoint) map {
-      AwsAttributes(_, _, _, _, _, _, _)
-    } match {
+    val errorOrAttributes = root |@| accessKeyId |@| secretKey |@| jobQueueName |@| containerMemoryMib |@| hostMountPoint |@| containerMountPoint
+
+    errorOrAttributes map AwsAttributes.apply match {
       case Valid(r) => r
       case Invalid(f) =>
         throw new IllegalArgumentException with MessageAggregation {
