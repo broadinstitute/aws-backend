@@ -63,7 +63,6 @@ trait AwsJobRunner {
             .withReadOnly(false)
 
           val containerProperties = new ContainerProperties()
-            .withCommand("")
             .withVcpus(0)
             .withMemory(0)
             .withImage(image)
