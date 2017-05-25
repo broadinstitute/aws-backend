@@ -1,13 +1,10 @@
 package cromwell.backend.impl.aws
 
-import com.typesafe.config.Config
-import cromwell.backend.io.{JobPaths, WorkflowPaths}
+import cromwell.backend.BackendInitializationData
+import cromwell.backend.io.WorkflowPaths
 import cromwell.backend.standard.{StandardInitializationActor, StandardInitializationActorParams, StandardInitializationData, StandardValidatedRuntimeAttributesBuilder}
-import cromwell.backend.validation.{CpuValidation, DockerValidation, MemoryValidation}
-import cromwell.backend.{BackendInitializationData, BackendJobDescriptorKey, BackendWorkflowDescriptor, MemorySize}
-import cromwell.core.JobKey
+import cromwell.backend.validation.{CpuValidation, DockerValidation, MemoryValidation, RuntimeAttributesKeys}
 import cromwell.core.path._
-import wdl4s.parser.MemoryUnit
 import wdl4s.values.{WdlArray, WdlSingleFile, WdlValue}
 
 import scala.collection.immutable.Seq
@@ -30,8 +27,8 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
   override def runtimeAttributesBuilder: StandardValidatedRuntimeAttributesBuilder = {
     super.runtimeAttributesBuilder.withValidation(
       DockerValidation.instance,
-      MemoryValidation.withDefaultMemory(MemorySize(awsAttributes.containerMemoryMib.toDouble, MemoryUnit.MiB)),
-      CpuValidation.default
+      MemoryValidation.withDefaultMemory(RuntimeAttributesKeys.MemoryKey, awsAttributes.containerMemory),
+      CpuValidation.instance.withDefault(CpuValidation.default)
     )
   }
 
@@ -86,39 +83,12 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
     })
   }
 
-  override lazy val workflowPaths: WorkflowPaths = {
-    new WorkflowPaths {
-      workflowPaths =>
-      override lazy val workflowDescriptor: BackendWorkflowDescriptor = standardParams.workflowDescriptor
-      override lazy val config: Config = standardParams.configurationDescriptor.backendConfig
-      override lazy val pathBuilders: List[PathBuilder] = awsInitializationActor.pathBuilders
-
-      // TODO: Switch AwsAttributes.root's name and config key. Then this override is no longer needed.
-      override lazy val executionRootString: String = workflowRootDirectory.resolve("cromwell-executions").pathAsString
-
-      override def toJobPaths(backendJobDescriptorKey: BackendJobDescriptorKey,
-                              jobWorkflowDescriptor: BackendWorkflowDescriptor): JobPaths = {
-        new JobPaths with WorkflowPaths {
-
-          override lazy val workflowDescriptor: BackendWorkflowDescriptor = jobWorkflowDescriptor
-          override lazy val config: Config = workflowPaths.config
-          override lazy val pathBuilders: List[PathBuilder] = workflowPaths.pathBuilders
-
-          // TODO: Switch AwsAttributes.root's name and config key. Then this override is no longer needed.
-          override lazy val executionRootString: String = workflowPaths.executionRootString
-
-          private lazy val sanitizedJobKey = AwsExpressionFunctions.sanitizedJobKey(backendJobDescriptorKey)
-          override lazy val callRoot: Path = workflowRoot.resolve(sanitizedJobKey)
-
-          override lazy val jobKey: JobKey = backendJobDescriptorKey
-
-          override def toJobPaths(backendJobDescriptorKey: BackendJobDescriptorKey,
-                                  jobWorkflowDescriptor: BackendWorkflowDescriptor): JobPaths =
-            workflowPaths.toJobPaths(backendJobDescriptorKey, jobWorkflowDescriptor)
-        }
-      }
-    }
-  }
+  override lazy val workflowPaths: WorkflowPaths = AwsWorkflowPaths(
+    standardParams.workflowDescriptor,
+    standardParams.configurationDescriptor.backendConfig,
+    DefaultPathBuilder.get(awsAttributes.hostMountPoint),
+    awsInitializationActor.pathBuilders
+  )
 
   /**
     * Validate that this WorkflowBackendActor can run all of the calls that it's been assigned

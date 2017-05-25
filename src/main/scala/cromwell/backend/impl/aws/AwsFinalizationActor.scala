@@ -23,10 +23,10 @@ case class AwsFinalizationActor(override val standardParams: StandardFinalizatio
 
   lazy val workflowInputsDirectory: Path = workflowRootDirectory.resolve("workflow-inputs")
 
-  // Copy outputs from EFS to the output bucket
+  // Copy outputs from local disk to the cloud outputs path
   override def afterAll(): Future[Unit] = {
     if (initializationDataOption.isDefined) {
-      val outputBucket = awsConfiguration.awsAttributes.root + "/workflow-outputs"
+      val outputBucket = awsConfiguration.awsAttributes.cloudOutputsRoot + s"/${workflowDescriptor.rootWorkflowId}/workflow-outputs"
       val commands = workflowOutputs.values.collect({ case JobOutput(WdlSingleFile(f)) =>
         val outputPath = awsBackendInitializationData.workflowPaths.getPath(f).get
         val relativePath = DefaultPathBuilder.get(awsAttributes.hostMountPoint).relativize(outputPath)
