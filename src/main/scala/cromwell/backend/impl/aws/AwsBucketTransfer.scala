@@ -1,8 +1,6 @@
 package cromwell.backend.impl.aws
 
-import cromwell.backend.MemorySize
 import cromwell.core.path.Path
-import wdl4s.parser.MemoryUnit
 
 /**
   * This adds redirection of standard streams and rc file capture like `StandardAsyncExecutionActor#redirectOutputs`
@@ -19,6 +17,6 @@ trait AwsBucketTransfer {
     val scriptPath = script.pathWithoutScheme
 
     runJobAndWait(s"sh $scriptPath > $stdout 2> $stderr < /dev/null || echo -1 > $rc", AwsBackendActorFactory.AwsCliImage,
-      MemorySize(awsAttributes.containerMemoryMib.toDouble, MemoryUnit.MiB), 1, awsAttributes)
+      awsAttributes.containerMemorySize, 1, awsAttributes)
   }
 }

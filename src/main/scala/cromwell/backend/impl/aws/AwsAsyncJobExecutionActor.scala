@@ -13,6 +13,7 @@ import cromwell.core.retry.SimpleExponentialBackoff
 import wdl4s.values.{WdlFile, WdlSingleFile}
 
 import scala.collection.JavaConverters._
+import scala.concurrent.Future
 import scala.concurrent.duration._
 
 case class AwsRunStatus(jobDetail: JobDetail) {
@@ -37,14 +38,18 @@ class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecut
 
   override lazy val awsConfiguration: AwsConfiguration = awsBackendInitializationData.awsConfiguration
 
+  val docker = RuntimeAttributesValidation.extract(DockerValidation.instance, validatedRuntimeAttributes)
+
+  // ECS currently doesn't support Docker image hashes, so use what's in the runtime attributes (hopefully that's not a hash).
+  override lazy val dockerImageUsed: Option[String] = Option(docker)
+
   override def execute(): ExecutionHandle = {
     val scriptFile = jobPaths.script
     scriptFile.parent.createDirectories().chmod("rwxrwxrwx")
     scriptFile.write(commandScriptContents)
 
     val cromwellCommand = redirectOutputs(s"/bin/bash ${jobPaths.script}")
-    val docker = RuntimeAttributesValidation.extract(DockerValidation.instance, validatedRuntimeAttributes)
-    val memory = RuntimeAttributesValidation.extract(MemoryValidation.instance, validatedRuntimeAttributes)
+    val memory = RuntimeAttributesValidation.extract(MemoryValidation.instance(), validatedRuntimeAttributes)
     val cpu = RuntimeAttributesValidation.extract(CpuValidation.instance, validatedRuntimeAttributes)
     val runJobResult = submitJob(cromwellCommand, docker, memory, cpu, awsConfiguration.awsAttributes)
 
@@ -100,9 +105,9 @@ class AwsAsyncJobExecutionActor(override val standardParams: StandardAsyncExecut
     super.handleExecutionSuccess(runStatus, handle, returnCode)
   }
 
-  override def handleExecutionFailure(runStatus: AwsRunStatus,
+  override def handleExecutionFailure(runStatus: StandardAsyncRunStatus,
                                       handle: StandardAsyncPendingExecutionHandle,
-                                      returnCode: Option[Int]): ExecutionHandle = {
+                                      returnCode: Option[Int]): Future[ExecutionHandle] = Future.successful {
     log.info("AWS job failed!\n{}", runStatus.jobDetail)
     val reason = containerReasonExit(runStatus.jobDetail).getOrElse(s"unknown error: ${runStatus.jobDetail}")
     if (isRetryableReason(reason)) {
