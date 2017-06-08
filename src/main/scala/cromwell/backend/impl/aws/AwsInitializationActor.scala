@@ -9,7 +9,6 @@ import wdl4s.values.{WdlArray, WdlSingleFile, WdlValue}
 
 import scala.collection.immutable.Seq
 import scala.concurrent.Future
-import scala.util.Try
 
 case class AwsBackendInitializationData
 (
@@ -40,21 +39,21 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
 
   lazy val workflowInputsPathBuilder: PathBuilder = new MappedPathBuilder("s3://", workflowRootDirectory.pathAsString)
 
-  override lazy val pathBuilders: List[PathBuilder] = List(workflowInputsPathBuilder, DefaultPathBuilder)
+  override lazy val pathBuilders: Future[List[PathBuilder]] = Future.successful(List(workflowInputsPathBuilder, DefaultPathBuilder))
 
-  override lazy val initializationData: StandardInitializationData =
-    AwsBackendInitializationData(workflowPaths, runtimeAttributesBuilder, awsConfiguration)
+  override lazy val initializationData: Future[StandardInitializationData] =
+    workflowPaths map { wps => AwsBackendInitializationData(wps, runtimeAttributesBuilder, awsConfiguration) }
 
   /** Copy inputs down from their S3 locations to the workflow inputs directory on the pre-mounted EFS volume. */
   override def beforeAll(): Future[Option[BackendInitializationData]] = {
+    pathBuilders flatMap { pbs =>
 
-    def pathsFromWdlValue(wdlValue: WdlValue): Seq[Path] = wdlValue match {
-      case WdlSingleFile(value) => Seq(PathFactory.buildPath(value, pathBuilders))
-      case a: WdlArray => a.value.toList flatMap pathsFromWdlValue
-      case _ => Seq.empty
-    }
+      def pathsFromWdlValue(wdlValue: WdlValue): Seq[Path] = wdlValue match {
+        case WdlSingleFile(value) => Seq(PathFactory.buildPath(value, pbs))
+        case a: WdlArray => a.value.toList flatMap pathsFromWdlValue
+        case _ => Seq.empty
+      }
 
-    Future.fromTry(Try {
       // Workflow inputs have to be S3 cp'd onesie twosie
       val paths = workflowDescriptor.knownValues.values flatMap pathsFromWdlValue
       val mappedPaths = paths collect { case path: MappedPath => path }
@@ -78,17 +77,19 @@ class AwsInitializationActor(standardParams: StandardInitializationActorParams)
       localizationScript.write(commands)
 
       runBucketTransferScript(localizationScript)
+      initializationData
 
-      Option(initializationData)
-    })
+    } map Option.apply
   }
 
-  override lazy val workflowPaths: WorkflowPaths = AwsWorkflowPaths(
-    standardParams.workflowDescriptor,
-    standardParams.configurationDescriptor.backendConfig,
-    DefaultPathBuilder.get(awsAttributes.hostMountPoint),
-    awsInitializationActor.pathBuilders
-  )
+  override lazy val workflowPaths: Future[WorkflowPaths] = awsInitializationActor.pathBuilders map { pbs =>
+    AwsWorkflowPaths(
+      standardParams.workflowDescriptor,
+      standardParams.configurationDescriptor.backendConfig,
+      DefaultPathBuilder.get(awsAttributes.hostMountPoint),
+      pbs
+    )
+  }
 
   /**
     * Validate that this WorkflowBackendActor can run all of the calls that it's been assigned

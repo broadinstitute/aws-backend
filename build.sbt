@@ -6,7 +6,7 @@ version := "1.0"
 
 scalaVersion := "2.11.8"
 
-val cromwellV = "27-1312eb3-SNAP"
+val cromwellV = "28-4487a51-SNAP"
 val betterFilesV = "2.16.0"
 
 val compilerSettings = List(
@@ -28,7 +28,7 @@ val compilerSettings = List(
 )
 
 resolvers ++= Seq(
-  "Broad Artifactory Releases" at "https://artifactory.broadinstitute.org/artifactory/libs-release/"
+  "Broad Artifactory Releases" at "https://broadinstitute.jfrog.io/broadinstitute/libs-release/"
 )
 
 /***
